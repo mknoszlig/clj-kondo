@@ -1,8 +1,9 @@
 (ns clj-kondo.impl.linters.deps-edn
   "Linter for deps.edn and bb.edn file contents."
-  (:require [clj-kondo.impl.findings :as findings]
+  (:require [clj-kondo.impl.analyzer :refer [analyze-expressions]]
+            [clj-kondo.impl.findings :as findings]
             [clj-kondo.impl.linters.edn-utils :as edn-utils]
-            [clj-kondo.impl.utils :refer [sexpr node->line]]
+            [clj-kondo.impl.utils :refer [sexpr node->line list-node token-node quote-node]]
             [clojure.string :as str]))
 
 (set! *warn-on-reflection* true)
@@ -197,8 +198,26 @@
                      task-map)]
      (some #(find-task-cycle adj %  [] #{}) (keys adj)))))
 
+(defn lint-task-code [ctx expr & [deps requires]]
+  (let [declares (when deps
+                   (list-node (cons (token-node 'declare "declare") deps)))
+        requires (when (seq requires)
+                   (list-node (cons (token-node 'require "require")
+                                    (map quote-node requires))))
+        constructed (remove nil? [declares
+                                  requires
+                                  expr])
+        analysis (analyze-expressions (assoc ctx
+                                             :lang :clj
+                                             :base-lang :clj)
+                                      constructed)]
+    (prn (map str  constructed))
+    ;;(println (:findings analysis))
+    ))
+
 (defn lint-tasks [ctx expr]
   (let [tasks (edn-utils/sexpr-keys expr)
+        global-requires  (:requires tasks)
         known-task? (set (keys tasks))
         path (find-task-cycle (sexpr expr))
         rotate #(vec (take (count path) (drop % (cycle path))))
@@ -208,16 +227,24 @@
     (doseq [[t-key t-def]    tasks
             :let  [t-map (edn-utils/sexpr-keys t-def)
                    private? (or (:private t-map)
-                                (= \- (first (name t-key))))]
-            :when (identical? :map (:tag t-def))]
-      (when-not (or (:doc t-map)
-                    private?)
+                                (= \- (first (name t-key))))
+                   map-task? (identical? :map (:tag t-def))
+                   depends   (when map-task?
+                               (:children (:depends t-map)))]]
+      (lint-task-code ctx
+                      (if map-task? (:task t-map) t-def)
+                      depends
+                      (concat (:children global-requires)
+                              (:children (:requires t-map))))
+      (when (and map-task?
+                 (not (or (:doc t-map)
+                          private?)))
         (findings/reg-finding! ctx
                                (node->line (:filename ctx)
                                            t-def
                                            :bb.edn-task-missing-docstring
                                            (format "Docstring missing for task: %s" t-key))))
-      (doseq [dep-task         (:children (:depends t-map))
+      (doseq [dep-task         depends
               :let             [cycle-idx    (get seg->index [t-key (:value dep-task)])
                                 unknown-dep? (not (known-task? (:value dep-task)))]
               :when            (or unknown-dep? cycle-idx)]
