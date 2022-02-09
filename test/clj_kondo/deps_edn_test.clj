@@ -222,3 +222,16 @@
      (lint! (str bb-edn)
             '{:linters {:bb.edn-task-missing-docstring {:level :warning}}}
             "--filename" "bb.edn"))))
+
+(deftest analyze-code-epxressions
+  (let [bb-edn '{:tasks
+                 {:requires [[clojure.edn :as edn]]
+                  run {:paths ["script"]
+                       :requires [[babashka.fs :as fs]]
+                       :task (println fs/dep)
+                       :depends [-dep]}
+}}]
+    (assert-submaps
+     '()
+     (lint! (str bb-edn)
+            "--filename" "bb.edn"))))
