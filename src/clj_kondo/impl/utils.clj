@@ -3,6 +3,7 @@
   (:require
    [clj-kondo.impl.rewrite-clj.node.keyword :as k]
    [clj-kondo.impl.rewrite-clj.node.protocols :as node]
+   [clj-kondo.impl.rewrite-clj.node.quote :as quote-node]
    [clj-kondo.impl.rewrite-clj.node.seq :as seq]
    [clj-kondo.impl.rewrite-clj.node.string :as node-string]
    [clj-kondo.impl.rewrite-clj.node.token :as token]
@@ -23,6 +24,7 @@
 (def token-node token/token-node)
 (def keyword-node k/keyword-node)
 (def string-node node-string/string-node)
+(def quote-node quote-node/quote-node)
 
 (defn list-node? [n]
   (and (instance? clj_kondo.impl.rewrite_clj.node.seq.SeqNode n)
