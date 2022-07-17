@@ -8,3 +8,8 @@
          (list* 'clojure.core/+
                 [(when (= 'form-env-macro (first &form)) "foo")
                  (when (contains? &env 'x) :foo)])))
+
+(defmacro private-defn [sym]
+  `(defn ~(with-meta sym {:private true}) []
+     ;; redundant stuff that should not be reported :)
+     (do (let [] (let [])))))

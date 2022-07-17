@@ -31,6 +31,7 @@
                                :deprecated
                                :refer
                                :alias
+                               :defmethod
                                :name-row
                                :name-col
                                :name-end-row
@@ -48,6 +49,8 @@
     (let [raw-attrs attrs
           attrs (select-keys attrs [:private :macro :fixed-arities :varargs-min-arity
                                     :doc :added :deprecated :test :export :defined-by
+                                    :protocol-ns :protocol-name
+                                    :imported-ns
                                     :name-row :name-col :name-end-col :name-end-row
                                     :arglist-strs :end-row :end-col])]
       (swap! analysis update :var-definitions conj
@@ -149,3 +152,21 @@
                 :col (:col method-meta)
                 :end-row (:end-row method-meta)
                 :end-col (:end-col method-meta)})))))
+
+(defn reg-instance-invocation!
+  [ctx method-name-node]
+  (when (:analyze-instance-invocations? ctx)
+    (when-let [analysis (:analysis ctx)]
+      (let [method-meta (meta method-name-node)
+            k :instance-invocations]
+        (when k
+          (swap! analysis update k conj
+                 (cond->
+                     {:method-name (str method-name-node)
+                      :filename (:filename ctx)
+                      :name-row (:row method-meta)
+                      :name-col (:col method-meta)
+                      :name-end-row (:end-row method-meta)
+                      :name-end-col (:end-col method-meta)}
+                   (= :cljc (:base-lang ctx))
+                   (assoc :lang (:lang ctx)))))))))

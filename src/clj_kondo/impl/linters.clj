@@ -204,7 +204,6 @@
   to call-specific linters."
   [ctx idacs]
   (let [config (:config ctx)
-        output-analysis? (-> config :output :analysis)
         linted-namespaces (:linted-namespaces idacs)]
     ;; (prn :from-cache from-cache)
     (doseq [ns (namespace/list-namespaces ctx)
@@ -233,7 +232,7 @@
                   called-fn (utils/resolve-call idacs call call-lang
                                                 resolved-ns fn-name unresolved? refer-alls)
                   #_#__(when (not call?)
-                      (clojure.pprint/pprint (dissoc call :config)))
+                         (clojure.pprint/pprint (dissoc call :config)))
                   name-meta (meta fn-name)
                   name-row (:row name-meta)
                   name-col (:col name-meta)
@@ -253,8 +252,8 @@
                        (assoc call
                               :row name-row
                               :col name-col
-                                :end-row name-end-row
-                                :end-col name-end-col)
+                              :end-row name-end-row
+                              :end-col name-end-col)
                        call))
                     true)
                   ;; we can determine if the call was made to another
@@ -298,25 +297,46 @@
                   recursive? (and
                               (= fn-ns caller-ns-sym)
                               (= fn-name in-def))
-                  _ (when output-analysis?
-                      (analysis/reg-usage! (assoc ctx :context (:context call))
-                                           filename
-                                           row
-                                           col
-                                           caller-ns-sym
-                                           resolved-ns fn-name arity
-                                           (when (= :cljc base-lang)
-                                             call-lang)
-                                           in-def
-                                           (assoc called-fn
-                                                  :alias (:alias call)
-                                                  :refer (:refer call)
-                                                  :name-row name-row
-                                                  :name-col name-col
-                                                  :name-end-row name-end-row
-                                                  :name-end-col name-end-col
-                                                  :end-row end-row
-                                                  :end-col end-col)))]
+                  _ (when (:analysis ctx)
+                      (when-not (:interop? call)
+                        (analysis/reg-usage! (assoc ctx :context (:context call))
+                                             filename
+                                             row
+                                             col
+                                             caller-ns-sym
+                                             resolved-ns fn-name arity
+                                             (when (= :cljc base-lang)
+                                               call-lang)
+                                             in-def
+                                             (assoc called-fn
+                                                    :alias (:alias call)
+                                                    :refer (:refer call)
+                                                    :defmethod (:defmethod call)
+                                                    :name-row name-row
+                                                    :name-col name-col
+                                                    :name-end-row name-end-row
+                                                    :name-end-col name-end-col
+                                                    :end-row end-row
+                                                    :end-col end-col))))
+                  call-config (:config call)
+                  fn-sym (symbol (str resolved-ns)
+                                 (str fn-name))
+                  _
+                  (let [discouraged-var-config
+                             (get-in (:config call) [:linters :discouraged-var])]
+                    (when-not (empty? (dissoc discouraged-var-config :level))
+                      (let [fn-lookup-sym (symbol (str (config/ns-group call-config resolved-ns))
+                                                  (str fn-name))
+                            ]
+                        (when-let [cfg (get discouraged-var-config fn-lookup-sym)]
+                          (findings/reg-finding! ctx {:filename filename
+                                                      :row row
+                                                      :end-row end-row
+                                                      :col col
+                                                      :end-col end-col
+                                                      :type :discouraged-var
+                                                      :message (or (:message cfg)
+                                                                   (str "Discouraged var: " fn-sym))})))))]
             :when valid-call?
             :let [fn-name (:name called-fn)
                   _ (when (and  ;; unresolved?
@@ -380,16 +400,16 @@
                                 :col col
                                 :type :private-call
                                 :message (format "#'%s is private"
-                                                 (str (:ns called-fn) "/" (:name called-fn)))}))
+                                                 (str fn-sym))}))
       (when-let [deprecated (:deprecated called-fn)]
         (when-not
             (or
              ;; recursive call
              recursive?
+             (utils/linter-disabled? call :deprecated-var)
              (config/deprecated-var-excluded
-              config
-              (symbol (str fn-ns)
-                      (str fn-name))
+              (:config call)
+              fn-sym
               caller-ns-sym in-def))
           (findings/reg-finding! ctx
                                  {:filename filename
@@ -411,6 +431,18 @@
                                               :filename filename
                                               :type :redundant-fn-wrapper
                                               :message "Redundant fn wrapper")))))
+      (when (and called-fn
+                 (not (identical? :off (-> call-config :linters :redundant-call)))
+                 (= 1 (:arity call))
+                 (config/redundant-call-included? call-config fn-sym))
+        (findings/reg-finding!
+         ctx {:filename filename
+              :row row
+              :end-row end-row
+              :col col
+              :end-col end-col
+              :type :redundant-call
+              :message (format "Single arg use of %s always returns the arg itself" fn-sym)}))
       (let [ctx (assoc ctx :filename filename)]
         (when call?
           (lint-specific-calls!
@@ -479,6 +511,25 @@
            (node->line filename node
                        finding-type msg)))))))
 
+(defn lint-discouraged-namespaces!
+  [ctx]
+  (let [config (:config ctx)]
+    (doseq [ns (namespace/list-namespaces ctx)
+            ns-sym (:required ns)
+            :let [ns-config (:config ns)
+                  config (or ns-config config)
+                  config-ns-sym (config/ns-group config ns-sym)
+                  linter-config (get-in config [:linters :discouraged-namespace config-ns-sym])]
+            :when (some? linter-config)
+            :let [{:keys [message]
+                   :or {message (str "Discouraged namespace: " ns-sym)}} linter-config
+                  m (meta ns-sym)
+                  filename (:filename m)]]
+      (findings/reg-finding!
+       ctx
+       (-> (node->line filename ns-sym :discouraged-namespace message)
+           (assoc :ns (export-ns-sym ns-sym)))))))
+
 (defn lint-bindings!
   [ctx]
   (doseq [ns (namespace/list-namespaces ctx)]
@@ -529,7 +580,18 @@
               :row (:row default)
               :col (:col default)
               :end-row (:end-row default)
-              :end-col (:end-col default)})))))))
+              :end-col (:end-col default)}))))
+      (when-not (identical? :off (-> ctx :config :linters :keyword-binding :level))
+        (doseq [binding (filter :keyword? (:bindings ns))]
+          (findings/reg-finding!
+           ctx
+           {:type :keyword-binding
+            :filename (:filename binding)
+            :message (str "Keyword binding should be a symbol: " (keyword (:name binding)))
+            :row (:row binding)
+            :col (:col binding)
+            :end-row (:end-row binding)
+            :end-col (:end-col binding)}))))))
 
 (defn lint-unused-private-vars!
   [ctx]
@@ -603,14 +665,14 @@
                 (str (first children))
                 (str expr))]
         (findings/reg-finding!
-          ctx
-          {:type :unresolved-var
-           :filename filename
-           :message (str "Unresolved var: " n)
-           :row (:row v)
-           :col (:col v)
-           :end-row (:end-row v)
-           :end-col (:end-col v)})))))
+         ctx
+         {:type :unresolved-var
+          :filename filename
+          :message (str "Unresolved var: " n)
+          :row (:row v)
+          :col (:col v)
+          :end-row (:end-row v)
+          :end-col (:end-col v)})))))
 
 (defn lint-unused-imports!
   [ctx]
@@ -641,14 +703,14 @@
             :let [m (meta un)
                   filename (:filename m)]]
       (findings/reg-finding!
-        ctx
-        {:type :unresolved-namespace
-         :filename filename
-         :message (str "Unresolved namespace " un ". Are you missing a require?")
-         :row (:row m)
-         :col (:col m)
-         :end-row (:end-row m)
-         :end-col (:end-col m)}))))
+       ctx
+       {:type :unresolved-namespace
+        :filename filename
+        :message (str "Unresolved namespace " un ". Are you missing a require?")
+        :row (:row m)
+        :col (:col m)
+        :end-row (:end-row m)
+        :end-col (:end-col m)}))))
 
 ;;;; scratch
 

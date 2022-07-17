@@ -18,6 +18,8 @@ configuration. For general configurations options, go [here](config.md).
     - [Bb.edn cyclic task dependency](#bbedn-cyclic-task-dependency)
     - [Bb.edn Unexpected key](#bbedn-unexpected-key)
     - [Bb.edn task docstring missing](#bbedn-task-docstring-missing)
+    - [Discouraged var](#discouraged-var)
+    - [Discouraged namespace](#discouraged-namespace)
     - [Docstring blank](#docstring-blank)
     - [Docstring no summary](#docstring-no-summary)
     - [Docstring leading trailing whitespace](#docstring-leading-trailing-whitespace)
@@ -33,6 +35,7 @@ configuration. For general configurations options, go [here](config.md).
     - [Conflicting arity](#conflicting-arity)
     - [Reduce without initial value](#reduce-without-initial-value)
     - [Loop without recur](#loop-without-recur)
+    - [Keyword in binding vector](#keyword-in-binding-vector)
     - [Main without gen-class](#main-without-gen-class)
     - [Misplaced docstring](#misplaced-docstring)
     - [Missing body in when](#missing-body-in-when)
@@ -41,11 +44,14 @@ configuration. For general configurations options, go [here](config.md).
     - [Missing else branch](#missing-else-branch)
     - [Missing map value](#missing-map-value)
     - [Missing test assertion](#missing-test-assertion)
+    - [Namespace name mismatch](#namespace-name-mismatch)
+    - [Non-arg vec return type hint](#non-arg-vec-return-type-hint)
     - [Not empty?](#not-empty)
     - [Private call](#private-call)
     - [Redefined var](#redefined-var)
     - [Redundant do](#redundant-do)
     - [Redundant fn wrapper](#redundant-fn-wrapper)
+    - [Redundant call](#redundant-call)
     - [Redundant expression](#redundant-expression)
     - [Redundant let](#redundant-let)
     - [Refer](#refer)
@@ -63,11 +69,12 @@ configuration. For general configurations options, go [here](config.md).
     - [Unresolved namespace](#unresolved-namespace)
     - [Unresolved symbol](#unresolved-symbol)
     - [Unresolved var](#unresolved-var)
-    - [Unsorted required namespace](#unsorted-required-namespace)
+    - [Unsorted required namespaces](#unsorted-required-namespaces)
     - [Unused namespace](#unused-namespace)
     - [Unused private var](#unused-private-var)
     - [Unused referred var](#unused-referred-var)
     - [Use](#use)
+    - [Warn on reflection](#warn-on-reflection)
 
 <!-- markdown-toc end -->
 
@@ -341,6 +348,72 @@ Global :requires belong in the :tasks map.
 Docstring missing for task: a
 ```
 
+### Discouraged var
+
+*Keyword*: `:discouraged-var`
+
+*Description:* warn on the usage of a var that is discouraged to be used.
+
+*Default level:* `:warning`
+
+*Config:*
+
+``` clojure
+{:linters {:discouraged-var {clojure.core/read-string {:message "Use edn/read-string instead of read-string"}}}}
+```
+
+The matching namespace symbol may be given a group name using a regex pattern.
+
+*Example trigger:*
+
+With the configuration above:
+
+``` clojure
+(read-string "(+ 1 2 3)")
+```
+
+*Example message:*
+
+```
+Use edn/read-string instead of read-string
+```
+
+### Discouraged namespace
+
+*Keyword*: `:discouraged-namespace`
+
+*Description:* warn on the require or usage of a namespace that is discouraged to be used.
+
+*Default level:* `:warning`
+
+*Config:*
+
+```clojure
+{:linters {:discouraged-namespace {clojure.java.jdbc {:message "Use next.jdbc instead of clojure.java.jdbc"}}}}
+```
+
+The matching namespace symbol may be given a group name using a regex pattern.
+
+```clojure
+{:ns-groups [{:pattern "clojure\\.java\\.jdbc.*"
+              :name jdbc-legacy}]
+ :linters {:discouraged-namespace {jdbc-legacy {:message "Use next.jdbc instead of clojure.java.jdbc"}}}}
+```
+
+Add `:discouraged-namespace` linter into `:config-in-ns` to specify that specific namespaces are discouraged to be used in some namespace of ns-group.
+
+```clojure
+{:config-in-ns {app.jdbc {:linters {:discouraged-namespace {clojure.java.jdbc {:message "Use next.jdbc instead of clojure.java.jdbc"}}}}}}
+```
+
+*Example trigger:*
+
+With the configuration above:
+
+```clojure
+(require '[clojure.java.jdbc :as j])
+```
+
 ### Docstring blank
 
 *Keyword:* `:docstring-blank`.
@@ -567,6 +640,18 @@ why this can be problematic.
 
 *Example message:* `Loop without recur.`
 
+### Keyword in binding vector
+
+**Keyword:** `:keyword-binding`
+
+*Description:* warn when a keyword is used in a `:keys` binding vector
+
+*Default level:* `:off`.
+
+*Example trigger:* `(let [{:keys [:a]} {:a 1}] a)`.
+
+*Example message:* `Keyword binding should be a symbol: :a`
+
 ### Main without gen-class
 
 *Keyword:* `:main-without-gen-class`.
@@ -669,6 +754,33 @@ misses a value.
 
 *Example message:* `missing test assertion`.
 
+### Namespace name mismatch
+
+*Keyword:* `:namespace-name-mismatch`.
+
+*Description:* warn when the namespace in the `ns` form does not
+correspond with the file name of the file.
+
+*Default level:* `:off`.
+
+*Example trigger:* a file named `foo.clj` containing a namespace `(ns bar)`.
+
+*Example message:* `Namespace name does not match file name: bar`
+
+### Non-arg vec return type hint
+
+*Keyword:* `:non-arg-vec-return-type-hint`.
+
+*Description:* warn when a return type in `defn` is not placed on the argument vector (CLJ only).
+
+*Default level:* `:warning`.
+
+*Example trigger:* `(defn ^String foo [] "cool fn")`.
+
+*Example message:* `Prefer placing return type hint on arg vector: String`
+
+Read [this](https://github.com/clj-kondo/clj-kondo/issues/1331) issue for more background information on this linter.
+
 ### Not empty?
 
 *Keyword:* `:not-empty?`
@@ -745,6 +857,34 @@ because of an explicit or implicit do as the direct parent s-expression.
 *Example trigger:* `#(inc %)`.
 
 *Example message:* `Redundant fn wrapper`.
+
+### Redundant call
+
+*Keyword*: `:redundant-call`
+
+*Description:* warn on redundant calls. The warning arises when a single argument
+is passed to a function or macro that that returns its arguments.
+
+`clojure.core` and `cljs.core` functions and macros that trigger this lint:
+* `->`, `->>`
+* `cond->`, `cond->>`
+* `some->`, `some->>`
+* `comp`, `partial`
+* `merge`
+
+*Config:*
+
+``` clojure
+{:linters {:redundant-call {:exclude #{clojure.core/->}
+                            :include #{clojure.core/conj!}}}}
+```
+
+Use `:exclude` to suppress warnings for the built-in list. Use `:include` to
+warn on additional vars.
+
+*Example trigger:* `(-> 1)`.
+
+*Example message:* `Single arg use of -> always returns the arg itself`.
 
 ### Redundant expression
 
@@ -971,7 +1111,7 @@ This will disable the warning in:
 
 *Example trigger:* `(let [_x 0] _x)`.
 
-*Example message:* `Using binding marked as unused: _x'
+*Example message:* `Using binding marked as unused: _x`
 
 These warnings can be enabled by setting the level to `:warning` or
 `:error` in your config.
@@ -1034,32 +1174,29 @@ You can report duplicate warnings using:
 
 *Config:*
 
-In the following code `streams` is a macro that assigns a special meaning to the
-symbol `where`, so it should not be reported as an unresolved symbol:
+In the following code, `match?` is a test assert expression brought in by `matcher-combinators.test`.
+We don't want it to be reported as an unresolved symbol.
 
 ``` clojure
 (ns foo
-  (:require [riemann.streams :refer [streams]]))
+  (:require [clojure.test :refer [deftest is]]
+            [matcher-combinators.test]))
 
-(def email (mailer {:host "mail.relay"
-                    :from "riemann@example.com"}))
-(streams
-  (where (and (= (:service event) “my-service”)
-              (= (:level event) “ERROR”))
-    ,,,))
+(deftest my-test
+  (is (match? [1 odd?] [1 3])))
 ```
 
-This is the config for it:
+The necessary config:
 
 ``` clojure
 {:linters
   {:unresolved-symbol
-    {:exclude [(riemann.streams/streams [where])]}}}
+    {:exclude [(clojure.test/is [match?])]}}}
 ```
 
-To exclude all symbols in calls to `riemann.streams/streams` write `:exclude [(riemann.streams/streams)]`, without the vector.
-
-To exclude a symbol from being reported as unresolved globally in your project, e.g. `foo`, you can use `:exclude [foo]`.
+If you want to exclude unresolved symbols from being reported:
+- for all symbols under calls to `clojure.test/is`, omit the vector of symbols: `:exclude [(clojure.test/is)]`
+- for symbol `match?` globally for your project, specify only the vector of symbols: `:exclude [match?]`
 
 Sometimes vars are introduced by executing macros, e.g. when using [HugSQL](https://github.com/layerware/hugsql)'s `def-db-fns`. You can suppress warnings about these vars by using `declare`. Example:
 
@@ -1149,9 +1286,9 @@ You can report duplicate warnings using:
 {:linters {:unresolved-var {:report-duplicates true}}}
 ```
 
-### Unsorted required namespace
+### Unsorted required namespaces
 
-*Keyword:* `:unsorted-required-namespace`.
+*Keyword:* `:unsorted-required-namespaces`.
 
 *Description:* warns on non-alphabetically sorted libspecs in `ns` and `require` forms.
 
@@ -1197,6 +1334,21 @@ A regex is also supported:
 ```
 
 This will exclude all namespaces ending with `.specs`.
+
+Namespaces without `:as` or `:refer` are assumed to be loaded for side effects,
+e.g. for clojure.spec or defining a protocol or multi-method, so the following
+will not trigger a warning:
+
+``` clojure
+(ns foo (:require [foo.specs]))
+```
+
+If you'd like to have namespaces without `:as` or `:refer` trigger
+warnings, you can enable this by setting the `:simple-libspec` option
+
+``` clojure
+{:linters {:unused-namespace {:simple-libspec true}}}
+```
 
 ### Unused private var
 
@@ -1256,3 +1408,26 @@ it. That can be done as follows:
 
 This linter is closely tied to [Refer All](#refer-all). Namespaces configured to
 suppress the `:refer-all` warning will also suppress the `:use` warning.
+
+### Warn on reflection
+
+*Keyword:* `:warn-on-reflection`
+
+*Description:* warns about not setting `*warn-on-reflection*` to true in Clojure
+namespaces. Defaults to only warning when doing interop.
+
+*Default level:* `:off`
+
+*Example trigger:* `(.length "hello")`
+
+*Example message:* `Var *warn-on-reflection* is not set in this namespace.`
+
+*Config:*
+
+``` clojure
+:warn-on-reflection {:level :off
+                     :warn-only-on-interop true}
+```
+
+The value of `:warn-only-on-interop` can be set to `false` to always warn in
+Clojure namespaces.

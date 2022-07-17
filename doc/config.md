@@ -9,6 +9,9 @@ Table of contents:
 
 - [Configuration](#configuration)
     - [Introduction](#introduction)
+    - [Namespace local configuration](#namespace-local-configuration)
+        - [:config-in-ns](#config-in-ns)
+        - [Metadata config](#metadata-config)
     - [Unrecognized macros](#unrecognized-macros)
     - [Options](#options)
         - [Disable a linter](#disable-a-linter)
@@ -27,6 +30,8 @@ Table of contents:
         - [Include and exclude files from the output](#include-and-exclude-files-from-the-output)
         - [Show progress bar while linting](#show-progress-bar-while-linting)
         - [Output canonical file paths](#output-canonical-file-paths)
+        - [Display rule name in text output](#show-rule-name-in-message)
+    - [Namespace groups](#namespace-groups)
     - [Example configurations](#example-configurations)
     - [Exporting and importing configuration](#exporting-and-importing-configuration)
         - [Exporting](#exporting)
@@ -38,14 +43,14 @@ Table of contents:
 
 ## Introduction
 
-Clj-kondo can be configured in five ways, by providing:
+Clj-kondo can be configured in several ways:
 
-- home dir config in `~/.config/clj-kondo/config.edn` (respects `XDG_CONFIG_HOME`)
+- home dir config in `~/.config/clj-kondo/config.edn` (respects `XDG_CONFIG_HOME`).
 - project config: a `config.edn` file in the `.clj-kondo` directory (see
-  [project setup](../README.md#project-setup))
-- `:config-paths` in project `config.edn`: a list of directories that provide additional config
-- command line `--config` file or EDN arguments
-- namespace local config using `:clj-kondo/config` metadata in the namespace form
+  [project setup](../README.md#project-setup)).
+- `:config-paths` in project `config.edn`: a list of directories that provide additional config.
+- command line `--config` file or EDN arguments.
+- namespace local config using `:clj-kondo/config` metadata in the namespace form (see below).
 
 The configurations are merged in the following order, where a later config overrides an earlier config:
 
@@ -60,11 +65,47 @@ configuration instead of merging with previous ones. The home dir config is
 implicitly part of `:config-paths`. To opt out of merging with home dir config
 use `:config-paths ^:replace []` in your project config.
 
-Note that namespace local config must always be quoted: `{:clj-kondo/config
-'{:linters ...}}` and quotes should not appear inside the config.
-
 Look at the [default configuration](../src/clj_kondo/impl/config.clj) for all
 available options.
+
+## Namespace local configuration
+
+Clj-kondo supports configuration on the namespace level, in two ways.
+
+### :config-in-ns
+
+The `:config-in-ns` option can be used to change the configuration while linting
+a specific namespace.
+
+```
+{:config-in-ns {my.namespace {:linters {:unresolved-symbol {:level :off}}}}}
+```
+
+This will silence unresolved symbol errors in the following:
+
+``` clojure
+(ns my.namespace)
+x y z
+```
+
+See [Namespace groups](#namespace-groups) on how to configure multiple namespace
+in one go.
+
+### Metadata config
+
+Clj-kondo supports config changes while linting a namespace via namespace
+metadata. The same example as above, but via metadata:
+
+``` clojure
+(ns my.namespace
+  {:clj-kondo/config '{:linters {:unresolved-symbol {:level :off}}}})
+x y z
+```
+Note that namespace local config must always be quoted on the outside:
+
+`{:clj-kondo/config '{:linters ...}}`
+
+Quotes should not appear inside the config.
 
 ## Unrecognized macros
 
@@ -104,6 +145,8 @@ Some linters are not enabled by default. Right now these linters are:
 - `:docstring-no-summary`: warn when first line of docstring is not a complete sentence.
 - `:docstring-leading-trailing-whitespace`: warn when docstring has leading or trailing whitespace.
 - `:used-underscored-binding`: warn when a underscored (ie marked as unused) binding is used.
+- `:warn-on-reflection`: warns about not setting `*warn-on-reflection*` to true in Clojure
+namespaces.
 
 You can enable these linters by setting the `:level`:
 
@@ -278,6 +321,48 @@ $ clj-kondo --lint corpus --config '{:output {:canonical-paths true}}'
 (rest of the output omitted)
 ```
 
+### Show rule name in message
+
+Adding `'{:output {:show-rule-name-in-message true}}` will append rule name to the output line for each reported finding.
+
+By default, this configuration is set to `false`.
+
+Output example with default `false`:
+
+```shell
+$ echo '(def x (def x 1))' | clj-kondo --lint -
+<stdin>:1:1: warning: redefined var #'user/x
+<stdin>:1:8: warning: inline def
+linting took 22ms, errors: 0, warnings: 2
+```
+
+Output example with `{:output {:show-rule-name-in-message true}}`:
+
+```shell
+$ echo '(def x (def x 1))' | clj-kondo --config '{:output {:show-rule-name-in-message true}}' --lint -
+<stdin>:1:1: warning: redefined var #'user/x [:redefined-var]
+<stdin>:1:8: warning: inline def [:inline-def]
+linting took 9ms, errors: 0, warnings: 2
+```
+
+## Namespace groups
+
+Sometimes it is desirable to configure a group of namespaces in one go. This can be done by creating namespace groups:
+
+``` clojure
+{:ns-groups [{:pattern "foo\\..*" :name foo-group}]}
+```
+
+Each group consists of a pattern (evaluated by `re-pattern`) and a `:name` (symbol).
+
+Namespace groups can be used in the following configurations:
+
+- In the `:discouraged-var` linter: `{foo-group/some-var {:message "..."}}`
+- In the `:discouraged-namespace` linter: `{foo-group {:message "..."}}`
+- In `:config-in-ns`: `{foo-group {:linters {:unresolved-symbol {:level :off}}}}`
+
+Namespace groups can be extended to more linters. Please make an issue to request this.
+
 ## Example configurations
 
 These are some example configurations used in real projects. Feel free to create a PR with yours too.
@@ -359,42 +444,45 @@ For example, if the `claypoole` library itself wanted to export config, it would
 
 ### Importing
 
-When invoked with the appropriate arguments, clj-kondo will inform you of any inactive imported clj-kondo configs from your project dependencies and instruct you how to activate them.
-As an example, let's add [clj-kondo/config](#sample-exports) that has some clj-kondo exports as a dependency to demonstrate:
+Clj-kondo, when asked, will copy clj-kondo configs found in library dependencies.
+As an example, let's add [clj-kondo/config](#sample-exports) as a dependency.
 
 1. Include `clj-kondo/config` in your `deps.edn`:
     ```Clojure
     {:deps {clj-kondo/config {:git/url "https://github.com/clj-kondo/config"
-                              :sha "e2e156c53c6c228fee7242629b41013f3e55051d"}}}
+                              :sha "c37c13ea09b6aaf23db3a7a9a0574f422bb0b4c2"}}}
     ```
-2. Ensure a `.clj-kondo` directory exists.
-3. And then invoke clj-kondo like so:
-    ```shellsession
-    $ clj-kondo --copy-configs --dependencies --lint "$(clojure -Spath)"
-    Imported config to .clj-kondo/clj-kondo/claypoole. To activate, add "clj-kondo/claypoole" to :config-paths in .clj-kondo/config.edn.
-    Imported config to .clj-kondo/clj-kondo/mockery. To activate, add "clj-kondo/mockery" to :config-paths in .clj-kondo/config.edn.
-    Imported config to .clj-kondo/clj-kondo/rum. To activate, add "clj-kondo/rum" to :config-paths in .clj-kondo/config.edn.
-    Imported config to .clj-kondo/clj-kondo/slingshot. To activate, add "clj-kondo/slingshot" to :config-paths in .clj-kondo/config.edn.
+2. Ensure a `.clj-kondo` directory exists, if necessary:
     ```
-4. To activate the claypoole clj-kondo config from the example above, you would edit
-your project's `.clj-kondo/config.edn` `:config-paths` as instructed:
-
-    ``` shellsession
-    {:config-paths ["clj-kondo/claypoole"]}
+    $ mkdir .clj-kondo
     ```
-
-    Note: Windows users should also use the forward slash as the directory separator character in `:config-paths` to ensure their configs also work on Linux and macOS.
-
-Typically, you'll want to check imported configs into version control with your project.
-
-Clj-kondo configurations are only automatically imported when all of these requirements are met:
+3. Then ask clj-kondo to copy configs like so:
+    ```
+    $ clj-kondo --lint "$(clojure -Spath)" --copy-configs --skip-lint
+    Configs copied:
+    - .clj-kondo/clj-kondo/better-cond
+    - .clj-kondo/clj-kondo/claypoole
+    - .clj-kondo/clj-kondo/mockery
+    - .clj-kondo/clj-kondo/rum
+    - .clj-kondo/clj-kondo/slingshot
+    ```
+4. Now enrichen clj-kondo's linting cache via:
+    ```
+    $ clj-kondo --lint $(clojure -Spath) --dependencies --parallel
+    ```
+4. That's it, your linting experience for your library dependencies is now augmented.
+You can now lint your project as normal, for example:
+    ```
+    $ clj-kondo --lint src:test
+    ```
+Clj-kondo configurations are only copied when both of these requirements are met:
 
 - There is a `.clj-kondo` directory in your project.
-This directory is where clj-kondo will copy import configs.
-- The `--dependencies` flag is present.
-This tells clj-kondo to not output findings because you are only linting dependencies to populate the cache.
+This directory is where clj-kondo will copy configs.
 - The `--copy-configs` flag is present.
-This tells clj-kondo to import clj-kondo configs from dependencies while linting.
+This tells clj-kondo to copy clj-kondo configs from dependencies while linting.
+
+Typically, you will want to check copied configs into version control with your project.
 
 ## Deprecations
 

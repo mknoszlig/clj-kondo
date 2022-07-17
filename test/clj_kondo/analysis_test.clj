@@ -15,181 +15,13 @@
       input
       (clj-kondo/run! (merge
                        {:lint ["-"]
-                        :config {:output {:analysis true}}}
+                        :config {:analysis true}}
                        config))))))
 
-(deftest keyword-analysis-test
-  (testing "standalone keywords with top-level require"
-    (let [a (analyze "(require '[bar :as b]) :kw :x/xkwa ::x/xkwb ::fookwa :foo/fookwb ::foo/fookwc :bar/barkwa ::b/barkwb ::bar/barkwc"
-                     {:config {:output {:analysis {:keywords true}}}})]
-      (assert-submaps
-       '[{:name "kw"}
-         {:name "xkwa" :ns x}
-         {:name "xkwb" :ns :clj-kondo/unknown-namespace}
-         {:name "fookwa" :ns user}
-         {:name "fookwb" :ns foo}
-         {:name "fookwc" :ns :clj-kondo/unknown-namespace}
-         {:name "barkwa" :ns bar}
-         {:name "barkwb" :ns bar :alias b}
-         {:name "barkwc" :ns :clj-kondo/unknown-namespace}]
-       (:keywords a))))
-  (testing "standalone keywords"
-    (let [a (analyze "(ns foo (:require [bar :as b])) :kw :2foo :x/xkwa ::x/xkwb ::fookwa :foo/fookwb ::foo/fookwc :bar/barkwa ::b/barkwb ::bar/barkwc"
-                     {:config {:output {:analysis {:keywords true}}}})]
-      (assert-submaps
-       '[{:name "kw"}
-         {:name "2foo"}
-         {:name "xkwa" :ns x}
-         {:name "xkwb" :ns :clj-kondo/unknown-namespace}
-         {:name "fookwa" :ns foo}
-         {:name "fookwb" :ns foo}
-         {:name "fookwc" :ns :clj-kondo/unknown-namespace}
-         {:name "barkwa" :ns bar}
-         {:name "barkwb" :ns bar :alias b}
-         {:name "barkwc" :ns :clj-kondo/unknown-namespace}]
-       (:keywords a))))
-  (testing "destructuring keywords"
-    (let [a (analyze (str "(ns foo (:require [bar :as b]))\n"
-                          "(let [{::keys [a :b]\n"
-                          "       ::b/keys [c :d]\n"
-                          "       :bar/keys [e :f]\n"
-                          "       :keys [g :h ::i :foo/j :bar/k ::b/l ::bar/m :x/n ::y/o foo/j]\n"
-                          "       p :p q ::q r ::b/r s :bar/s t :x/t} {}])")
-                     {:config {:output {:analysis {:keywords true}}}})]
-      (assert-submaps
-       '[{:name "keys" :ns foo :keys-destructuring-ns-modifier true}
-         {:name "a" :ns foo :keys-destructuring true}
-         {:name "b" :ns foo :keys-destructuring true}
-         {:name "keys" :ns bar :alias b}
-         {:name "c" :ns bar :keys-destructuring true}
-         {:name "d" :ns bar :keys-destructuring true}
-         {:name "keys" :ns bar}
-         {:name "e" :ns bar :keys-destructuring true}
-         {:name "f" :ns bar :keys-destructuring true}
-         {:name "keys"}
-         {:name "g" :keys-destructuring true}
-         {:name "h" :keys-destructuring true}
-         {:name "i" :ns foo :keys-destructuring true}
-         {:name "j" :ns foo :keys-destructuring true}
-         {:name "k" :ns bar :keys-destructuring true}
-         {:name "l" :ns bar :alias b :keys-destructuring true}
-         {:name "m" :ns :clj-kondo/unknown-namespace}
-         {:name "n" :ns x}
-         {:name "o" :ns :clj-kondo/unknown-namespace}
-         {:name "p"}
-         {:name "q" :ns foo}
-         {:name "r" :ns bar :alias b}
-         {:name "s" :ns bar}
-         {:name "t" :ns x}
-         {:name "j" :ns foo :keys-destructuring true}]
-       (:keywords a))))
-  (testing "clojure.spec.alpha/def can add :reg"
-    (let [a (analyze "(require '[clojure.spec.alpha :as s]) (s/def ::kw (inc))"
-                     {:config {:output {:analysis {:keywords true}}}})]
-      (assert-submaps
-       '[{:name "kw" :reg clojure.spec.alpha/def}]
-       (:keywords a))))
-  (testing "re-frame.core/reg-event-db can add :reg"
-    (let [a (analyze "(require '[re-frame.core :as rf])
-                      (rf/reg-event-db ::a (constantly {}))
-                      (rf/reg-event-fx ::b (constantly {}))
-                      (rf/reg-event-ctx ::c (constantly {}))
-                      (rf/reg-sub ::d (constantly {}))
-                      (rf/reg-sub-raw ::e (constantly {}))
-                      (rf/reg-fx ::f (constantly {}))
-                      (rf/reg-cofx ::g (constantly {}))"
-                     {:config {:output {:analysis {:keywords true}}}})]
-      (assert-submaps
-       '[{:name "a" :reg re-frame.core/reg-event-db}
-         {:name "b" :reg re-frame.core/reg-event-fx}
-         {:name "c" :reg re-frame.core/reg-event-ctx}
-         {:name "d" :reg re-frame.core/reg-sub}
-         {:name "e" :reg re-frame.core/reg-sub-raw}
-         {:name "f" :reg re-frame.core/reg-fx}
-         {:name "g" :reg re-frame.core/reg-cofx}]
-       (:keywords a))))
-  (testing ":lint-as re-frame.core function will add :reg with the source full qualified ns"
-    (let [a (analyze "(user/mydef ::kw (constantly {}))"
-                     {:config {:output {:analysis {:keywords true}}
-                               :lint-as '{user/mydef re-frame.core/reg-event-fx}}})]
-      (assert-submaps
-       '[{:name "kw" :reg user/mydef}]
-       (:keywords a))))
-  (testing "hooks can add :reg"
-    (let [a (analyze "(user/mydef ::kw (inc))"
-                     {:config {:output {:analysis {:keywords true}}
-                               :hooks {:__dangerously-allow-string-hooks__ true
-                                       :analyze-call
-                                       {'user/mydef
-                                        (str "(require '[clj-kondo.hooks-api :as a])"
-                                             "(fn [{n :node}]"
-                                             "  (let [c (:children n)]"
-                                             "    {:node (a/list-node "
-                                             "             (list* 'do"
-                                             "                    (a/reg-keyword! (second c) 'user/mydef)"
-                                             "                    (drop 2 c)))}))")}}}})]
-      (assert-submaps
-       '[{:name "kw" :reg user/mydef}]
-       (:keywords a))))
-  (testing "valid ns name with clojure.data.xml"
-    (let [a (analyze "(ns foo (:require [clojure.data.xml :as xml]))
-                      (xml/alias-uri 'pom \"http://maven.apache.org/POM/4.0.0\")
-                      ::pom/foo"
-                     {:config {:output {:analysis {:keywords true}}}})]
-      (is (edn/read-string (str a)))))
-  (testing "namespaced maps"
-    (testing "auto-resolved namespace"
-      (let [a (analyze "(ns foo (:require [clojure.data.xml :as xml]))
-                      #::xml{:a 1}"
-                       {:config {:output {:analysis {:keywords true}}}})]
-        (assert-submaps
-         '[{:name "a" :ns clojure.data.xml}]
-         (:keywords a))))
-    (testing "non-autoresolved namespace"
-      (let [a (analyze "(ns foo (:require [clojure.data.xml :as xml]))
-                      #:xml{:a 1}"
-                       {:config {:output {:analysis {:keywords true}}}})]
-        (assert-submaps
-         '[{:name "a" :ns xml}]
-         (:keywords a))))
-    ;; Don't use assertmap here to make sure ns is absent
-    (testing "no namespace for key :a"
-      (let [a (analyze "#:xml{:_/a 1}"
-                       {:config {:output {:analysis {:keywords true}}}})]
-        (is (= '[{:row 1, :col 7, :end-row 1, :end-col 11, :name "a", :filename "<stdin>" :from user}]
-               (:keywords a)))))
-    ;; Don't use assertmap here to make sure ns is absent
-    (testing "no namespace for key :b"
-      (let [a (analyze "#:xml{:a {:b 1}}"
-                       {:config {:output {:analysis {:keywords true}}}})]
-        (is (= '[{:row 1, :col 7, :end-row 1, :end-col 9, :ns xml, :name "a", :filename "<stdin>" :namespace-from-prefix true :from user}
-                 {:row 1, :col 11, :end-row 1, :end-col 13, :name "b", :filename "<stdin>" :from user}]
-               (:keywords a)))))
-    (testing "auto-resolved and namespace-from-prefix"
-      (let [a (analyze "(ns foo (:require [clojure.set :as set]))
-                        :a ::b :bar/c
-                        #:d{:e 1 :_/f 2 :g/h 3 ::i 4}
-                        {:j/k 5 :l 6 ::m 7}
-                        #::set{:a 1}"
-                       {:config {:output {:analysis {:keywords true}}}})]
-        (is (= '[{:row 2 :col 25 :end-row 2 :end-col 27 :name "a" :filename "<stdin>" :from foo}
-                 {:row 2 :col 28 :end-row 2 :end-col 31 :ns foo :auto-resolved true :name "b" :filename "<stdin>" :from foo}
-                 {:row 2 :col 32 :end-row 2 :end-col 38 :ns bar :name "c" :filename "<stdin>" :from foo}
-                 {:row 3 :col 29 :end-row 3 :end-col 31 :ns d :namespace-from-prefix true :name "e" :filename "<stdin>" :from foo}
-                 {:row 3 :col 34 :end-row 3 :end-col 38 :name "f" :filename "<stdin>" :from foo}
-                 {:row 3 :col 41 :end-row 3 :end-col 45 :ns g :name "h" :filename "<stdin>" :from foo}
-                 {:row 3 :col 48 :end-row 3 :end-col 51 :ns foo :auto-resolved true :name "i" :filename "<stdin>" :from foo}
-                 {:row 4 :col 26 :end-row 4 :end-col 30 :ns j :name "k" :filename "<stdin>" :from foo}
-                 {:row 4 :col 33 :end-row 4 :end-col 35 :name "l" :filename "<stdin>" :from foo}
-                 {:row 4 :col 38 :end-row 4 :end-col 41 :ns foo :auto-resolved true :name "m" :filename "<stdin>" :from foo}
-                 {:row 5, :col 32, :end-row 5, :end-col 34, :ns clojure.set, :namespace-from-prefix true,
-                  :name "a", :filename "<stdin>" :from foo}]
-               (:keywords a)))))))
-
 (deftest locals-analysis-test
-  (let [a (analyze "#(inc %1 %&)" {:config {:output {:analysis {:locals true}}}})]
+  (let [a (analyze "#(inc %1 %&)" {:config {:analysis {:locals true}}})]
     (is (= [] (:locals a) (:local-usages a))))
-  (let [a (analyze "(areduce [] i j 0 (+ i j))" {:config {:output {:analysis {:locals true}}}})
+  (let [a (analyze "(areduce [] i j 0 (+ i j))" {:config {:analysis {:locals true}}})
         [first-a second-a] (:locals a)
         [first-use second-use] (:local-usages a)]
     (assert-submaps
@@ -198,7 +30,7 @@
      (:locals a))
     (is (= (:id first-a) (:id first-use)))
     (is (= (:id second-a) (:id second-use))))
-  (let [a (analyze "(defn x [a] (let [a a] a) a)" {:config {:output {:analysis {:locals true}}}})
+  (let [a (analyze "(defn x [a] (let [a a] a) a)" {:config {:analysis {:locals true}}})
         [first-a second-a] (:locals a)
         [first-use second-use third-use] (:local-usages a)]
     (assert-submaps
@@ -207,14 +39,25 @@
      (:locals a))
     (is (= (:id first-a) (:id first-use) (:id third-use)))
     (is (= (:id second-a) (:id second-use))))
-  (let [a (analyze "(as-> {} $ $)" {:config {:output {:analysis {:locals true}}}})
+  (let [a (analyze "(defn x ([a] a) ([b c] (+ b c)))" {:config {:analysis {:locals true}}})
+        [first-a first-b first-c] (:locals a)
+        [a-use b-use c-use] (:local-usages a)]
+    (assert-submaps
+     [{:end-col 12 :scope-end-col 16}
+      {:end-col 20 :scope-end-col 32}
+      {:end-col 22 :scope-end-col 32}]
+     (:locals a))
+    (is (= (:id first-a) (:id a-use)))
+    (is (= (:id first-b) (:id b-use)))
+    (is (= (:id first-c) (:id c-use))))
+  (let [a (analyze "(as-> {} $ $)" {:config {:analysis {:locals true}}})
         [first-a] (:locals a)
         [first-use] (:local-usages a)]
     (assert-submaps
      [{:end-col 11 :scope-end-col 14}]
      (:locals a))
     (is (= (:id first-a) (:id first-use))))
-  (let [a (analyze "(letfn [(a [b] b)] a)" {:config {:output {:analysis {:locals true}}}})
+  (let [a (analyze "(letfn [(a [b] b)] a)" {:config {:analysis {:locals true}}})
         [first-a second-a] (:locals a)
         [first-use second-use] (:local-usages a)]
     (assert-submaps
@@ -223,7 +66,20 @@
      (:locals a))
     (is (= (:id first-a) (:id first-use)))
     (is (= (:id second-a) (:id second-use))))
-  (let [a (analyze "(let [a 0] (let [a a] a))" {:config {:output {:analysis {:locals true}}}})
+  (let [a (analyze "(letfn [(a ([b] b) ([c d] (+ c d)))] a)" {:config {:analysis {:locals true}}})
+        [first-a first-b first-c first-d] (:locals a)
+        [first-use second-use third-use fourth-use] (:local-usages a)]
+    (assert-submaps
+     [{:end-col 11 :scope-end-col 40}
+      {:end-col 15 :scope-end-col 19}
+      {:end-col 23 :scope-end-col 35}
+      {:end-col 25 :scope-end-col 35}]
+     (:locals a))
+    (is (= (:id first-a) (:id first-use)))
+    (is (= (:id first-b) (:id second-use)))
+    (is (= (:id first-c) (:id third-use)))
+    (is (= (:id first-d) (:id fourth-use))))
+  (let [a (analyze "(let [a 0] (let [a a] a))" {:config {:analysis {:locals true}}})
         [first-a second-a] (:locals a)
         [first-use second-use] (:local-usages a)]
     (assert-submaps
@@ -232,7 +88,7 @@
      (:locals a))
     (is (= (:id first-a) (:id first-use)))
     (is (= (:id second-a) (:id second-use))))
-  (let [a (analyze "(let [a 0 a a] a)" {:config {:output {:analysis {:locals true}}}})
+  (let [a (analyze "(let [a 0 a a] a)" {:config {:analysis {:locals true}}})
         [first-a second-a] (:locals a)
         [first-use second-use] (:local-usages a)]
     (assert-submaps
@@ -241,7 +97,7 @@
      (:locals a))
     (is (= (:id first-a) (:id first-use)))
     (is (= (:id second-a) (:id second-use))))
-  (let [a (analyze "(if-let [a 0] a a)" {:config {:output {:analysis {:locals true}}}})
+  (let [a (analyze "(if-let [a 0] a a)" {:config {:analysis {:locals true}}})
         [first-a second-a] (:locals a)
         [first-use second-use] (:local-usages a)]
     (assert-submaps
@@ -249,7 +105,7 @@
      (:locals a))
     (is (= (:id first-a) (:id first-use)))
     (is (= nil second-a second-use)))
-  (let [a (analyze "(for [a [123] :let [a a] :when a] a)" {:config {:output {:analysis {:locals true}}}})
+  (let [a (analyze "(for [a [123] :let [a a] :when a] a)" {:config {:analysis {:locals true}}})
         [first-a second-a] (:locals a)
         [first-use second-use third-use] (:local-usages a)]
     (assert-submaps
@@ -260,7 +116,7 @@
     (is (= (:id first-a) (:id first-use)))
     (is (= (:id second-a) (:id second-use) (:id third-use))))
   (testing "local usages are reported with correct positions"
-    (let [ana (analyze "(let [x (set 1 2 3)] (+ x 1))" {:config {:output {:analysis {:locals true}}}})
+    (let [ana (analyze "(let [x (set 1 2 3)] (+ x 1))" {:config {:analysis {:locals true}}})
           [x] (:locals ana)]
       (assert-submaps
        [{:row 1, :col 25,
@@ -272,7 +128,7 @@
          :id 1}]
        (:local-usages ana))))
   (testing "Names are reported in binding usages when called as fn"
-    (let [ana (analyze "(let [x #(set 1 2 3)] (x 1))" {:config {:output {:analysis {:locals true}}}})
+    (let [ana (analyze "(let [x #(set 1 2 3)] (x 1))" {:config {:analysis {:locals true}}})
           [x] (:locals ana)]
       (assert-submaps
        [{:row 1, :col 23,
@@ -284,12 +140,25 @@
          :id 1}]
        (:local-usages ana))))
   (testing "generated nodes should not be included on analysis"
-    (let [ana (analyze "(cond-> {:a 1 :b 2} true (merge {}))" {:config {:output {:analysis {:locals true}}}})]
+    (let [ana (analyze "(cond-> {:a 1 :b 2} true (merge {}))" {:config {:analysis {:locals true}}})]
       (is (empty? (:locals ana)))
       (is (empty? (:local-usages ana))))
-    (let [ana (analyze "(doto {:a 1 :b 2} (merge {}))" {:config {:output {:analysis {:locals true}}}})]
+    (let [ana (analyze "(doto {:a 1 :b 2} (merge {}))" {:config {:analysis {:locals true}}})]
       (is (empty? (:locals ana)))
       (is (empty? (:local-usages ana))))))
+
+(deftest deftype-locals-test
+  (let [{:keys [:locals :local-usages]}
+        (analyze "(deftype Foo [a b c] clojure.lang.IFn (invoke [_] [a b]))"
+                 {:config {:analysis {:locals true}}})]
+    ;; (clj-kondo.impl.utils/stderr :locals (pr-str locals))
+    (assert-submaps '[{:end-row 1, :scope-end-row 1, :name a, :scope-end-col 58, :filename "<stdin>", :str "a", :col 15, :id 1, :end-col 16, :row 1}
+                      {:end-row 1, :scope-end-row 1, :name b, :scope-end-col 58, :filename "<stdin>", :str "b", :col 17, :id 2, :end-col 18, :row 1} {:end-row 1, :scope-end-row 1, :name c, :scope-end-col 58, :filename "<stdin>", :str "c", :col 19, :id 3, :end-col 20, :row 1}
+                      {:end-row 1, :scope-end-row 1, :name _, :scope-end-col 57, :filename "<stdin>", :str "_", :col 48, :id 5, :end-col 49, :row 1}]
+                    locals)
+    (assert-submaps '[{:end-row 1, :name-end-col 53, :name-end-row 1, :name-row 1, :name a, :filename "<stdin>", :col 52, :id 1, :name-col 52, :end-col 53, :row 1}
+                      {:end-row 1, :name-end-col 55, :name-end-row 1, :name-row 1, :name b, :filename "<stdin>", :col 54, :id 2, :name-col 54, :end-col 55, :row 1}]
+                    local-usages)))
 
 (deftest protocol-impls-test
   (testing "defrecord without protocol"
@@ -300,119 +169,433 @@
 
   (^Bla other-thing [_ a b]
     456
-    789))" {:config {:output {:analysis {:protocol-impls true}}}})]
+    789))" {:config {:analysis {:protocol-impls true}}})]
       (assert-submaps
-        []
-        protocol-impls)))
-  (testing "defrecord with simple protocol"
+       []
+       protocol-impls)))
+  (testing "defrecord with simple protocols"
     (let [{:keys [:protocol-impls]} (analyze "
-(defprotocol MyFoo
-  (something [this])
-  (^Bla other-thing [this a b]))
+(defprotocol AProtocol
+  (a-method [this])
+  (^Bla b-method [this a b]))
 
-(defrecord MyBar []
-  MyFoo
-  (something [_]
+(defprotocol BProtocol
+  (c-method [this])
+  (^Bla d-method [this a b]))
+
+(defrecord ARecord []
+  AProtocol
+  (a-method [_]
     123)
-
-  (^Bla other-thing [_ a b]
+  (^Bla b-method [_ a b]
     456
-    789))" {:config {:output {:analysis {:protocol-impls true}}}})]
+    789)
+
+  BProtocol
+  (c-method [_]
+    123)
+  (^Bla d-method [_ a b]
+    456
+    789))" {:config {:analysis {:protocol-impls true}}})]
       (assert-submaps
-        '[{:protocol-name MyFoo
-           :protocol-ns user
-           :method-name something
-           :impl-ns user
-           :filename "<stdin>"
-           :defined-by clojure.core/defrecord
-           :name-row 8 :name-col 4 :name-end-row 8 :name-end-col 13
-           :row 8 :col 3 :end-row 9 :end-col 9}
-          {:protocol-name MyFoo
-           :protocol-ns user
-           :method-name other-thing
-           :impl-ns user
-           :filename "<stdin>"
-           :defined-by clojure.core/defrecord
-           :name-row 11 :name-col 9 :name-end-row 11 :name-end-col 20
-           :row 11 :col 3 :end-row 13 :end-col 9}]
-        protocol-impls)))
+       '[{:protocol-name AProtocol
+          :protocol-ns user
+          :method-name a-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by clojure.core/defrecord
+          :name-row 12 :name-col 4 :name-end-row 12 :name-end-col 12
+          :row 12 :col 3 :end-row 13 :end-col 9}
+         {:protocol-name AProtocol
+          :protocol-ns user
+          :method-name b-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by clojure.core/defrecord
+          :name-row 14 :name-col 9 :name-end-row 14 :name-end-col 17
+          :row 14 :col 3 :end-row 16 :end-col 9}
+         {:protocol-name BProtocol
+          :protocol-ns user
+          :method-name c-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by clojure.core/defrecord
+          :name-row 19 :name-col 4 :name-end-row 19 :name-end-col 12
+          :row 19 :col 3 :end-row 20 :end-col 9}
+         {:protocol-name BProtocol
+          :protocol-ns user
+          :method-name d-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by clojure.core/defrecord
+          :name-row 21 :name-col 9 :name-end-row 21 :name-end-col 17
+          :row 21 :col 3 :end-row 23 :end-col 9}]
+       protocol-impls)))
   (testing "defrecord with aliased protocol"
     (let [{:keys [:protocol-impls]}
           (analyze (->> ["(ns some-ns)"
-                         "(defprotocol MyFoo"
-                         "  (something [this])"
-                         "  (^Bla other-thing [this a b]))"
+                         "(defprotocol AProtocol"
+                         "  (a-method [this])"
+                         "  (^Bla b-method [this a b]))"
                          "(ns other-ns (:require [some-ns :as some]))"
-                         "(defrecord MyBar []"
-                         "  some/MyFoo"
-                         "  (something [_]"
+                         "(defrecord ARecord []"
+                         "  some/AProtocol"
+                         "  (a-method [_]"
                          "    123)"
                          ""
-                         "  (^Bla other-thing [_ a b]"
+                         "  (^Bla b-method [_ a b]"
                          "    456"
                          "    789))"]
                         (string/join "\n"))
-                   {:config {:output {:analysis {:protocol-impls true}}}})]
+                   {:config {:analysis {:protocol-impls true}}})]
       (assert-submaps
-        '[{:protocol-name MyFoo
-           :protocol-ns some-ns
-           :method-name something
-           :impl-ns other-ns
-           :filename "<stdin>"
-           :defined-by clojure.core/defrecord
-           :name-row 8 :name-col 4 :name-end-row 8 :name-end-col 13
-           :row 8 :col 3 :end-row 9 :end-col 9}
-          {:protocol-name MyFoo
-           :protocol-ns some-ns
-           :method-name other-thing
-           :impl-ns other-ns
-           :filename "<stdin>"
-           :defined-by clojure.core/defrecord
-           :name-row 11 :name-col 9 :name-end-row 11 :name-end-col 20
-           :row 11 :col 3 :end-row 13 :end-col 9}]
-        protocol-impls)))
+       '[{:protocol-name AProtocol
+          :protocol-ns some-ns
+          :method-name a-method
+          :impl-ns other-ns
+          :filename "<stdin>"
+          :defined-by clojure.core/defrecord
+          :name-row 8 :name-col 4 :name-end-row 8 :name-end-col 12
+          :row 8 :col 3 :end-row 9 :end-col 9}
+         {:protocol-name AProtocol
+          :protocol-ns some-ns
+          :method-name b-method
+          :impl-ns other-ns
+          :filename "<stdin>"
+          :defined-by clojure.core/defrecord
+          :name-row 11 :name-col 9 :name-end-row 11 :name-end-col 17
+          :row 11 :col 3 :end-row 13 :end-col 9}]
+       protocol-impls)))
   (testing "deftype"
     (let [{:keys [:protocol-impls]} (analyze "
-(defprotocol MyFoo
-  (something [this])
-  (^Bla other-thing [this a b]))
+(defprotocol AProtocol
+  (a-method [this])
+  (^Bla b-method [this a b]))
 
-(deftype MyBar []
-  MyFoo
-  (something [_]
+(defprotocol BProtocol
+  (c-method [this])
+  (^Bla d-method [this a b]))
+
+(deftype AType []
+  AProtocol
+  (a-method [_]
     123)
-
-  (^Bla other-thing [_ a b]
+  (^Bla b-method [_ a b]
     456
-    789))" {:config {:output {:analysis {:protocol-impls true}}}})]
+    789)
+
+  BProtocol
+  (c-method [_]
+    123)
+  (^Bla d-method [_ a b]
+    456
+    789))" {:config {:analysis {:protocol-impls true}}})]
       (assert-submaps
-        '[{:protocol-name MyFoo
-           :protocol-ns user
-           :method-name something
-           :impl-ns user
-           :filename "<stdin>"
-           :defined-by clojure.core/deftype
-           :name-row 8 :name-col 4 :name-end-row 8 :name-end-col 13
-           :row 8 :col 3 :end-row 9 :end-col 9}
-          {:protocol-name MyFoo
-           :protocol-ns user
-           :method-name other-thing
-           :impl-ns user
-           :filename "<stdin>"
-           :defined-by clojure.core/deftype
-           :name-row 11 :name-col 9 :name-end-row 11 :name-end-col 20
-           :row 11 :col 3 :end-row 13 :end-col 9}]
-        protocol-impls))))
+       '[{:protocol-name AProtocol
+          :protocol-ns user
+          :method-name a-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by clojure.core/deftype
+          :name-row 12 :name-col 4 :name-end-row 12 :name-end-col 12
+          :row 12 :col 3 :end-row 13 :end-col 9}
+         {:protocol-name AProtocol
+          :protocol-ns user
+          :method-name b-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by clojure.core/deftype
+          :name-row 14 :name-col 9 :name-end-row 14 :name-end-col 17
+          :row 14 :col 3 :end-row 16 :end-col 9}
+         {:protocol-name BProtocol
+          :protocol-ns user
+          :method-name c-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by clojure.core/deftype
+          :name-row 19 :name-col 4 :name-end-row 19 :name-end-col 12
+          :row 19 :col 3 :end-row 20 :end-col 9}
+         {:protocol-name BProtocol
+          :protocol-ns user
+          :method-name d-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by clojure.core/deftype
+          :name-row 21 :name-col 9 :name-end-row 21 :name-end-col 17
+          :row 21 :col 3 :end-row 23 :end-col 9}]
+       protocol-impls)))
+  (testing "extend-protocol"
+    (let [{:keys [:protocol-impls]} (analyze "
+(defprotocol AProtocol
+  (a-method [this])
+  (^Bla b-method [this a b]))
+
+(defrecord ARecord [])
+(deftype AType [])
+
+(extend-protocol AProtocol
+  ARecord
+  (a-method [_]
+    123)
+  (^Bla b-method [_ a b]
+    456
+    789)
+
+  AType
+  (a-method [_]
+    123)
+  (^Bla b-method [_ a b]
+    456
+    789))" {:config {:analysis {:protocol-impls true}}})]
+      (assert-submaps
+       '[{:protocol-name AProtocol
+          :protocol-ns user
+          :method-name a-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by clojure.core/extend-protocol
+          :name-row 11 :name-col 4 :name-end-row 11 :name-end-col 12
+          :row 11 :col 3 :end-row 12 :end-col 9}
+         {:protocol-name AProtocol
+          :protocol-ns user
+          :method-name b-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by clojure.core/extend-protocol
+          :name-row 13 :name-col 9 :name-end-row 13 :name-end-col 17
+          :row 13 :col 3 :end-row 15 :end-col 9}
+         {:protocol-name AProtocol
+          :protocol-ns user
+          :method-name a-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by clojure.core/extend-protocol
+          :name-row 18 :name-col 4 :name-end-row 18 :name-end-col 12
+          :row 18 :col 3 :end-row 19 :end-col 9}
+         {:protocol-name AProtocol
+          :protocol-ns user
+          :method-name b-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by clojure.core/extend-protocol
+          :name-row 20 :name-col 9 :name-end-row 20 :name-end-col 17
+          :row 20 :col 3 :end-row 22 :end-col 9}]
+       protocol-impls)))
+  (testing "extend-type"
+    (let [{:keys [:protocol-impls]} (analyze "
+(defprotocol AProtocol
+  (a-method [this])
+  (^Bla b-method [this a b]))
+
+(defprotocol BProtocol
+  (c-method [this])
+  (^Bla d-method [this a b]))
+
+(deftype AType [])
+
+(extend-type AType
+  AProtocol
+  (a-method [_]
+    123)
+  (^Bla b-method [_ a b]
+    456
+    789)
+
+  BProtocol
+  (c-method [_]
+    123)
+  (^Bla d-method [_ a b]
+    456
+    789))" {:config {:analysis {:protocol-impls true}}})]
+      (assert-submaps
+       '[{:protocol-name AProtocol
+          :protocol-ns user
+          :method-name a-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by clojure.core/extend-type
+          :name-row 14 :name-col 4 :name-end-row 14 :name-end-col 12
+          :row 14 :col 3 :end-row 15 :end-col 9}
+         {:protocol-name AProtocol
+          :protocol-ns user
+          :method-name b-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by clojure.core/extend-type
+          :name-row 16 :name-col 9 :name-end-row 16 :name-end-col 17
+          :row 16 :col 3 :end-row 18 :end-col 9}
+         {:protocol-name BProtocol
+          :protocol-ns user
+          :method-name c-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by clojure.core/extend-type
+          :name-row 21 :name-col 4 :name-end-row 21 :name-end-col 12
+          :row 21 :col 3 :end-row 22 :end-col 9}
+         {:protocol-name BProtocol
+          :protocol-ns user
+          :method-name d-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by clojure.core/extend-type
+          :name-row 23 :name-col 9 :name-end-row 23 :name-end-col 17
+          :row 23 :col 3 :end-row 25 :end-col 9}]
+       protocol-impls)))
+  (testing "reify"
+    (let [{:keys [:protocol-impls]} (analyze "
+(defprotocol AProtocol
+  (a-method [this])
+  (^Bla b-method [this a b]))
+
+(defprotocol BProtocol
+  (c-method [this])
+  (^Bla d-method [this a b]))
+
+(reify
+  AProtocol
+  (a-method [_]
+    123)
+  (^Bla b-method [_ a b]
+    456
+    789)
+
+  BProtocol
+  (c-method [_]
+    123)
+  (^Bla d-method [_ a b]
+    456
+    789))" {:config {:analysis {:protocol-impls true}}})]
+      (assert-submaps
+       '[{:protocol-name AProtocol
+          :protocol-ns user
+          :method-name a-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by clojure.core/reify
+          :name-row 12 :name-col 4 :name-end-row 12 :name-end-col 12
+          :row 12 :col 3 :end-row 13 :end-col 9}
+         {:protocol-name AProtocol
+          :protocol-ns user
+          :method-name b-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by clojure.core/reify
+          :name-row 14 :name-col 9 :name-end-row 14 :name-end-col 17
+          :row 14 :col 3 :end-row 16 :end-col 9}
+         {:protocol-name BProtocol
+          :protocol-ns user
+          :method-name c-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by clojure.core/reify
+          :name-row 19 :name-col 4 :name-end-row 19 :name-end-col 12
+          :row 19 :col 3 :end-row 20 :end-col 9}
+         {:protocol-name BProtocol
+          :protocol-ns user
+          :method-name d-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by clojure.core/reify
+          :name-row 21 :name-col 9 :name-end-row 21 :name-end-col 17
+          :row 21 :col 3 :end-row 23 :end-col 9}]
+       protocol-impls)))
+  (testing "specify!"
+    (let [{:keys [:protocol-impls]} (analyze "
+(defprotocol AProtocol
+  (a-method [this])
+  (^Bla b-method [this a b]))
+
+(defprotocol BProtocol
+  (c-method [this])
+  (^Bla d-method [this a b]))
+
+(def a-map {})
+
+(specify! a-map
+  AProtocol
+  (a-method [_]
+    123)
+  (^Bla b-method [_ a b]
+    456
+    789)
+
+  BProtocol
+  (c-method [_]
+    123)
+  (^Bla d-method [_ a b]
+    456
+    789))" {:lang :cljs, :config {:analysis {:protocol-impls true}}})]
+      (assert-submaps
+       '[{:protocol-name AProtocol
+          :protocol-ns user
+          :method-name a-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by cljs.core/specify!
+          :name-row 14 :name-col 4 :name-end-row 14 :name-end-col 12
+          :row 14 :col 3 :end-row 15 :end-col 9}
+         {:protocol-name AProtocol
+          :protocol-ns user
+          :method-name b-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by cljs.core/specify!
+          :name-row 16 :name-col 9 :name-end-row 16 :name-end-col 17
+          :row 16 :col 3 :end-row 18 :end-col 9}
+         {:protocol-name BProtocol
+          :protocol-ns user
+          :method-name c-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by cljs.core/specify!
+          :name-row 21 :name-col 4 :name-end-row 21 :name-end-col 12
+          :row 21 :col 3 :end-row 22 :end-col 9}
+         {:protocol-name BProtocol
+          :protocol-ns user
+          :method-name d-method
+          :impl-ns user
+          :filename "<stdin>"
+          :defined-by cljs.core/specify!
+          :name-row 23 :name-col 9 :name-end-row 23 :name-end-col 17
+          :row 23 :col 3 :end-row 25 :end-col 9}]
+       protocol-impls))))
+
+(deftest defmulti-defmethod-test
+  (testing "defmulti and defmethod"
+    (let [{:keys [:var-usages :var-definitions]} (analyze "
+(defmulti my-multi :some-key)
+​
+(defmethod my-multi :some-value
+  [_]
+  :bar)" {:config {:analysis true}})]
+      (assert-submaps
+       '[{:name my-multi
+          :defined-by clojure.core/defmulti
+          :ns user
+          :name-row 2 :name-col 11 :name-end-row 2 :name-end-col 19
+          :row 2 :col 1 :end-row 2 :end-col 30}]
+       var-definitions)
+      (assert-submaps
+       '[{:name defmulti}
+         {}
+         {:name defmethod}
+         {:name my-multi
+          :from user
+          :to user
+          :defmethod true
+          :name-row 4 :name-col 12 :name-end-row 4 :name-end-col 20
+          :row 4 :col 12 :end-row 4 :end-col 20}]
+       var-usages))))
 
 (deftest name-position-test
-  (let [{:keys [:var-definitions :var-usages]} (analyze "(defn foo [] foo)" {:config {:output {:analysis {:locals true}}}})]
+  (let [{:keys [:var-definitions :var-usages]} (analyze "(defn foo [] foo)" {:config {:analysis {:locals true}}})]
     (assert-submaps
      '[{:name foo :name-row 1 :name-col 7 :name-end-row 1 :name-end-col 10 :end-row 1 :end-col 18}]
      var-definitions)
     (assert-submaps
      '[{:name foo :name-row 1 :name-col 14 :name-end-row 1 :name-end-col 17} {}]
      var-usages))
-  (let [{:keys [:var-definitions :var-usages]} (analyze "(defprotocol Foo (bar [])) Foo bar" {:config {:output {:analysis {:locals true}}}})]
+  (let [{:keys [:var-definitions :var-usages]} (analyze "(defprotocol Foo (bar [])) Foo bar" {:config {:analysis {:locals true}}})]
     (assert-submaps
      '[{:name Foo :name-row 1 :name-col 14 :name-end-row 1 :name-end-col 17 :end-row 1 :end-col 27}
        {:name bar :name-row 1 :name-col 19 :name-end-row 1 :name-end-col 22 :end-row 1 :end-col 27}]
@@ -430,9 +613,13 @@
         :name-row 1,
         :name-col 32}]
      var-usages))
-  (let [{:keys [:namespace-definitions :namespace-usages]} (analyze "(ns foo (:require [bar :as b :refer [x]] [clojure [string :as str]]))" {:config {:output {:analysis {:locals true}}}})]
+  (let [{:keys [:namespace-definitions :namespace-usages]} (analyze "(ns foo (:require [bar :as b :refer [x]] [clojure [string :as str]]))" {:config {:analysis {:locals true}}})]
     (assert-submaps
      '[{:name foo
+        :row 1,
+        :end-row 1,
+        :col 1,
+        :end-col 70,
         :name-end-col 8,
         :name-end-row 1,
         :name-row 1,
@@ -458,14 +645,7 @@
         :name-end-row 1
         :name-end-col 58}]
      namespace-usages))
-  (let [{:keys [:var-definitions :var-usages]} (analyze "(try (catch Exception foo foo))" {:config {:output {:analysis {:locals true}}}})]
-    (assert-submaps
-     '[]
-     var-definitions)
-    (assert-submaps
-     '[{:name-row 1 :name-col 13 :name-end-row 1 :name-end-col 22} {}]
-     var-usages))
-  (let [{:keys [:var-definitions :var-usages]} (analyze "(def a (atom nil)) (:foo @a)" {:config {:output {:analysis {:locals true}}}})]
+  (let [{:keys [:var-definitions :var-usages]} (analyze "(def a (atom nil)) (:foo @a)" {:config {:analysis {:locals true}}})]
     (assert-submaps
      '[{:name-row 1 :name-col 6 :name-end-row 1 :name-end-col 7 :end-row 1 :end-col 19}]
      var-definitions)
@@ -475,7 +655,7 @@
 
 (deftest scope-usage-test
   (testing "when the var-usage is called as function"
-    (let [{:keys [:var-usages]} (analyze "(defn foo [a] a) (foo 2)" {:config {:output {:analysis true}}})]
+    (let [{:keys [:var-usages]} (analyze "(defn foo [a] a) (foo 2)" {:config {:analysis true}})]
       (is (some #(= % '{:fixed-arities #{1}
                         :name-end-col 22
                         :name-end-row 1
@@ -492,7 +672,7 @@
                         :to user})
                 var-usages))))
   (testing "when the var-usage is not called as function"
-    (let [{:keys [:var-usages]} (analyze "(defn foo [a] a) foo" {:config {:output {:analysis true}}})]
+    (let [{:keys [:var-usages]} (analyze "(defn foo [a] a) foo" {:config {:analysis true}})]
       (is (some #(= % '{:fixed-arities #{1}
                         :name-end-col 21
                         :name-end-row 1
@@ -508,7 +688,7 @@
                         :to user})
                 var-usages))))
   (testing "when the var-usage call is unknown"
-    (let [{:keys [:var-usages]} (analyze "(defn foo [a] a) (bar 2)" {:config {:output {:analysis true}}})]
+    (let [{:keys [:var-usages]} (analyze "(defn foo [a] a) (bar 2)" {:config {:analysis true}})]
       (is (some #(= % '{:name-end-row 1
                         :name-end-col 22
                         :name-row 1
@@ -724,6 +904,35 @@
         :name bound-fn,
         :from foo,
         :to clojure.core}]
+     var-usages))
+  (let [{:keys [:var-usages]}
+        (analyze "(ns foo)
+                  (defn foo [x] x)
+                  (def bar foo)"
+                 {:config {:analysis {:var-usages false}}})]
+    (assert-submaps
+     '[]
+     var-usages))
+  (let [{:keys [:var-definitions
+                :var-usages]}
+        (analyze "(ns foo)
+                  (defn foo [x] (inc x))
+                  (def bar foo)"
+                 {:config {:analysis {:var-definitions {:shallow true}}}})]
+    (assert-submaps ;; var definitions are analyzed
+     '[{:fixed-arities #{1},
+        :ns foo,
+        :name foo,
+        :defined-by clojure.core/defn}
+       {:ns foo,
+        :name bar,
+        :defined-by clojure.core/def}]
+     var-definitions)
+    (assert-submaps ;; but their bodies aren't
+     '[{:name defn,
+        :to clojure.core}
+       {:name def,
+        :to clojure.core}]
      var-usages)))
 
 (deftest hooks-custom-defined-by-test
@@ -733,7 +942,7 @@
       :defined-by user/defflow}]
    (:var-definitions
     (analyze "(user/defflow foobar)"
-             {:config {:output {:analysis {:keywords true}}
+             {:config {:analysis {:keywords true}
                        :hooks {:__dangerously-allow-string-hooks__ true
                                :analyze-call
                                {'user/defflow
@@ -768,7 +977,7 @@
                     (defprotocol A (f3 [g] \"doc\") (f4 [h] [i i']))
                     (defrecord A [j k])
                     (defmacro f5 [l m])"
-                   {:config {:output {:analysis {:arglists true}}}})]
+                   {:config {:analysis {:arglists true}}})]
       (assert-submaps
        '[{:name f1,
           :defined-by clojure.core/defn
@@ -847,8 +1056,14 @@
 (deftest defprotocol-test
   (let [{:keys [:var-definitions]}
         (analyze "(ns foo)
-                  (defprotocol Foo (foo [_]))")]
-    (is (= '#{clojure.core/defprotocol} (set (map :defined-by var-definitions))))))
+                  (defprotocol Foo (bar [_]) (baz [_]))")]
+    (is (= '#{clojure.core/defprotocol} (set (map :defined-by var-definitions))))
+    (is (= {} (select-keys (first var-definitions) [:protocol-ns :protocol-name])))
+    (assert-submaps
+     '[{:name Foo}
+       {:name bar :protocol-ns foo :protocol-name Foo}
+       {:name baz :protocol-ns foo :protocol-name Foo}]
+     var-definitions)))
 
 (deftest export-test
   (let [{:keys [:var-definitions]}
@@ -903,10 +1118,9 @@
 (defn- ana-var-meta [s cfg]
   (-> (with-in-str s
         (clj-kondo/run! {:lint ["-"] :config
-                         {:output
-                          {:analysis
-                           {:var-definitions
-                            cfg}}}}))
+                         {:analysis
+                          {:var-definitions
+                           cfg}}}))
       :analysis :var-definitions first))
 
 (defn- ana-def-expected [m]
@@ -940,8 +1154,7 @@
                                 :name-end-col 24})
              (-> (with-in-str "(def ^:no-doc ^:other x true)"
                    (clj-kondo/run! {:lint ["-"] :config
-                                    {:output
-                                     {:analysis true}}}))
+                                    {:analysis true}}))
                  :analysis :var-definitions first))))
     (testing "we don't clobber :user-meta"
       (is (= (ana-def-expected {:meta {:user-meta :foo-bar}
@@ -1117,10 +1330,9 @@
 (defn- ana-ns-meta [s cfg]
   (-> (with-in-str s
         (clj-kondo/run! {:lint ["-"] :config
-                         {:output
-                          {:analysis
-                           {:namespace-definitions
-                            cfg}}}}))
+                         {:analysis
+                          {:namespace-definitions
+                           cfg}}}))
       :analysis :namespace-definitions first))
 
 (defn- ana-ns-expected [m]
@@ -1133,6 +1345,8 @@
       (is (= (ana-ns-expected {:meta {:my-meta1 true :my-meta2 true :my-meta3 true}
                                :name-col 38
                                :name-end-col 48
+                               :end-row 1
+                               :end-col 64
                                :doc "some ns docs"})
              (ana-ns-meta "(ns ^:my-meta1 ^:my-meta2 ^:my-meta3 my.ns.here \"some ns docs\")"
                           {:meta true}))))
@@ -1140,6 +1354,8 @@
       (is (= (ana-ns-expected {:meta {:my-meta1 true :my-meta2 true :my-meta3 true}
                                :name-col 53
                                :name-end-col 63
+                               :end-row 1
+                               :end-col 79
                                :doc "some ns docs"})
              (ana-ns-meta "(ns ^{:my-meta1 true :my-meta2 true :my-meta3 true} my.ns.here \"some ns docs\")"
                           {:meta true}))))
@@ -1147,6 +1363,8 @@
       (is (= (ana-ns-expected {:meta {:my-meta1 true :my-meta2 true :my-meta3 true}
                                :name-col 5
                                :name-end-col 15
+                               :end-row 1
+                               :end-col 78
                                :doc "some ns docs"})
              (ana-ns-meta "(ns my.ns.here \"some ns docs\" {:my-meta1 true :my-meta2 true :my-meta3 true})"
                           {:meta true}))))
@@ -1154,6 +1372,8 @@
       (is (= (ana-ns-expected {:meta {:deprecated true :added "1.2.3"}
                                :name-col 36
                                :name-end-col 46
+                               :end-row 1
+                               :end-col 67
                                :deprecated true
                                :added "1.2.3"})
              (ana-ns-meta "(ns ^:deprecated ^{:added \"0.1.2\"} my.ns.here {:added \"1.2.3\"} [])"
@@ -1162,19 +1382,25 @@
       (is (= (ana-ns-expected {:meta {:my-meta-here true :doc "some ns docs"}
                                :doc "some ns docs"
                                :name-col 47
-                               :name-end-col 57})
+                               :name-end-col 57
+                               :end-row 1
+                               :end-col 58})
              (ana-ns-meta "(ns ^{:my-meta-here true :doc \"some ns docs\"} my.ns.here)"
                           {:meta true}))))
     (testing "we don't clobber :user-meta"
       (is (= (ana-ns-expected {:meta {:user-meta :foo-bar}
                                :name-col 28
-                               :name-end-col 38})
+                               :name-end-col 38
+                               :end-row 1
+                               :end-col 39})
              (ana-ns-meta "(ns ^{:user-meta :foo-bar} my.ns.here)"
                           {:meta true})))))
   (testing "return specific"
     (is (= (ana-ns-expected {:meta {:my-meta1 true :my-meta3 true}
                              :name-col 38
-                             :name-end-col 48})
+                             :name-end-col 48
+                             :end-row 1
+                             :end-col 49})
            (ana-ns-meta "(ns ^:my-meta1 ^:my-meta2 ^:my-meta3 my.ns.here)"
                         {:meta #{:my-meta1 :my-meta3}}))))
   (testing "when user specifies metadata with same keys as positional metadata, it is returned"
@@ -1187,7 +1413,9 @@
                                     :name-end-col :nec
                                     :cool :yes}
                              :name-col 127
-                             :name-end-col 137})
+                             :name-end-col 137
+                             :end-row 1
+                             :end-col 138})
            (ana-ns-meta (str "(ns ^{:row :r :col :c"
                              " :end-col :ec :end-row :er"
                              " :name-row :nr :name-col :nc"
@@ -1196,11 +1424,12 @@
                         {:meta true}))))
   (testing "request none"
     (is (= (ana-ns-expected {:name-col 38
-                             :name-end-col 48})
+                             :name-end-col 48
+                             :end-row 1
+                             :end-col 49})
            (-> (with-in-str "(ns ^:my-meta1 ^:my-meta2 ^:my-meta3 my.ns.here)"
                  (clj-kondo/run! {:lint ["-"] :config
-                                  {:output
-                                   {:analysis true}}}))
+                                  {:analysis true}}))
                :analysis :namespace-definitions first)))))
 
 (deftest derived-doc
@@ -1311,8 +1540,8 @@
 (re-frame/reg-event-db ::bar (fn [x] (dec x)))
 "
                              (clj-kondo/run! {:lang :cljs :lint ["-"] :config
-                                              {:output {:analysis {:context [:re-frame.core]
-                                                                   :keywords true}}}}))
+                                              {:analysis {:context [:re-frame.core]
+                                                          :keywords true}}}))
                            :analysis)
               usages (:var-usages analysis)
               keywords (:keywords analysis)
@@ -1325,9 +1554,9 @@
               foo-def-usage (some #(when (= 'foo-def (:name %)) %) usages)
               foo-def-re-frame-id (-> foo-def-usage :context :re-frame.core :in-id)
               foo-def-k (some (fn [k]
-                            (when (some-> k :context :re-frame.core :id (= foo-def-re-frame-id))
-                              k))
-                          keywords)
+                                (when (some-> k :context :re-frame.core :id (= foo-def-re-frame-id))
+                                  k))
+                              keywords)
               dec-usage (some #(when (= 'dec (:name %)) %) usages)
               dec-re-frame-id (-> dec-usage :context :re-frame.core :in-id)
               dec-k (some (fn [k]
@@ -1350,6 +1579,9 @@
           (is (:auto-resolved dec-k))
           (is (= "reg-event-db" (-> dec-k :context :re-frame.core :var))))))))
 
+(defn- re-frame-id [re-frame-name kw]
+  (when-let [id (and (= re-frame-name (:name kw)) (-> kw :context :re-frame.core :id))] id))
+
 (deftest re-frame-reg-sub-subscription-test
   (testing "reg-sub and subscription relations are trackable through context"
     (let [analysis (-> (with-in-str "
@@ -1363,19 +1595,18 @@
 (defn barfn [] @(rf/subscribe [:a]))
 "
                          (clj-kondo/run! {:lang :cljs :lint ["-"] :config
-                                          {:output {:analysis {:context [:re-frame.core]
-                                                               :keywords true}}}}))
+                                          {:analysis {:context [:re-frame.core]
+                                                      :keywords true}}}))
                        :analysis)
           usages (:var-usages analysis)
           keywords (:keywords analysis)
           constantly-usage (some #(when (= 'constantly (:name %)) %) usages)
           constantly-in-re-frame-id (-> constantly-usage :context :re-frame.core :in-id)
-          sub-id-fn (fn [sub-name kw] (when-let [id (and (= sub-name (:name kw)) (-> kw :context :re-frame.core :id))] id))
-          a-sub-id (some (partial sub-id-fn "a") keywords)
-          b-sub-id (some (partial sub-id-fn "b") keywords)
-          c-sub-id (some (partial sub-id-fn "c") keywords)
-          d-sub-id (some (partial sub-id-fn "d") keywords)
-          e-sub-id (some (partial sub-id-fn "e") keywords)]
+          a-sub-id (some (partial re-frame-id "a") keywords)
+          b-sub-id (some (partial re-frame-id "b") keywords)
+          c-sub-id (some (partial re-frame-id "c") keywords)
+          d-sub-id (some (partial re-frame-id "d") keywords)
+          e-sub-id (some (partial re-frame-id "e") keywords)]
       (testing "var usages in re-frame subscription is tracked"
         (is constantly-in-re-frame-id)
         (is (some #(when (some-> % :context :re-frame.core :id (= constantly-in-re-frame-id)) %) keywords)))
@@ -1429,7 +1660,7 @@
   foo/my-other)
 "
                            (clj-kondo/run! {:lang :clj :lint ["-"] :config
-                                            {:output {:analysis true}}}))
+                                            {:analysis true}}))
                          :analysis)
             usages (:var-usages analysis)
             my-func-usage (some #(when (= 'my-func (:name %)) %) usages)
@@ -1457,6 +1688,7 @@
              {:name 'my-func
               :ns 'api
               :defined-by 'potemkin/import-vars
+              :imported-ns 'foo
               :row 10
               :col 1
               :end-row 12
@@ -1470,6 +1702,7 @@
              {:name 'my-other
               :ns 'api
               :defined-by 'potemkin/import-vars
+              :imported-ns 'foo
               :row 10
               :col 1
               :end-row 12
@@ -1494,7 +1727,7 @@
        my-other])
 "
                            (clj-kondo/run! {:lang :clj :lint ["-"] :config
-                                            {:output {:analysis true}}}))
+                                            {:analysis true}}))
                          :analysis)
             usages (:var-usages analysis)
             my-func-usage (some #(when (= 'my-func (:name %)) %) usages)
@@ -1526,6 +1759,7 @@
              {:name 'my-func
               :ns 'api
               :defined-by 'potemkin/import-vars
+              :imported-ns 'foo
               :row 10
               :col 1
               :end-row 12
@@ -1539,6 +1773,7 @@
              {:name 'my-other
               :ns 'api
               :defined-by 'potemkin/import-vars
+              :imported-ns 'foo
               :row 10
               :col 1
               :end-row 12
@@ -1548,6 +1783,78 @@
               :name-end-row 12
               :name-end-col 16}
              my-other-definition))))))
+
+(deftest re-frame-dispatch-reg-event-fx-test
+  (let [analysis (:analysis (with-in-str
+                              "(ns foo (:require [re-frame.core :as rf]))
+(rf/reg-event-db :foo (fn [db [_ arg1]] (dissoc db arg1)))
+(rf/reg-event-db :other-foo (fn [db [_ arg1 arg2]] (assoc db arg1 arg2)))
+
+(ns bar (:require [re-frame.core :as rf]))
+(defn bar-fn [] (rf/dispatch [:foo :some-key]))
+(rf/reg-event-fx :simple-dispatch (fn [{:keys [db]} [_ arg1]] {:dispatch [:foo (:bar arg1)]}))
+(rf/reg-event-fx :fx-dispatch (fn [{:keys [db]} [_ arg1]] {:fx [[:dispatch [:foo (:bar arg1)]]]}))
+(rf/reg-event-fx :later-dispatch (fn [{:keys [db]} [_ arg1]] {:fx [[:dispatch-later {:ms 10 :dispatch [:foo (:bar arg1)]}]]}))
+(rf/reg-event-fx :multiple-dispatch (fn [{:keys [db]} [_ arg1 arg2]] {:fx [[:dispatch-n [[:foo (:bar arg1)] [:other-foo arg1 arg2]]]]}))"
+                              (clj-kondo/run! {:lang :cljs :lint ["-"] :config
+                                               {:analysis {:context [:re-frame.core]
+                                                           :keywords true}}})))
+        keywords (:keywords analysis)
+        simple-dispatch-id (some (partial re-frame-id "simple-dispatch") keywords)
+        fx-dispatch-id (some (partial re-frame-id "fx-dispatch") keywords)
+        later-dispatch-id (some (partial re-frame-id "later-dispatch") keywords)
+        multiple-dispatch-id (some (partial re-frame-id "multiple-dispatch") keywords)]
+    (is simple-dispatch-id)
+    (is fx-dispatch-id)
+    (is later-dispatch-id)
+    (is multiple-dispatch-id)
+    (testing "from-var and from filled on keyword that is an event reference for dispatch in a cljs var"
+      (->> (filter #(and (= "foo" (:name %)) (some-> % :context :re-frame.core :event-ref)) keywords)
+           (some #(when (and (= 'bar-fn (:from-var %)) (= 'bar (:from %))) %))
+           is))
+    (testing ":dispatch keyword in reg-event-fx return map is tracked"
+      (is (some #(when (and (= "foo" (:name %))
+                            (= simple-dispatch-id (-> % :context :re-frame.core :in-id))
+                            (some-> % :context :re-frame.core :event-ref)) %) keywords)))
+    (testing ":dispatch keyword in vector in reg-event-fx under :fx keyword is tracked"
+      (is (some #(when (and (= "foo" (:name %))
+                            (= fx-dispatch-id (-> % :context :re-frame.core :in-id))
+                            (some-> % :context :re-frame.core :event-ref)) %) keywords)))
+    (testing ":dispatch keyword in reg-event-fx under :dispatch-later keyword is tracked"
+      (is (some #(when (and (= "foo" (:name %))
+                            (= later-dispatch-id (-> % :context :re-frame.core :in-id))
+                            (some-> % :context :re-frame.core :event-ref)) %) keywords)))
+    (testing "references to multiple dispatches under :dispatch-n are tracked"
+      (is (some #(when (and (= "foo" (:name %))
+                            (= multiple-dispatch-id (-> % :context :re-frame.core :in-id))
+                            (some-> % :context :re-frame.core :event-ref)) %) keywords))
+      (is (some #(when (and (= "other-foo" (:name %))
+                            (= multiple-dispatch-id (-> % :context :re-frame.core :in-id))
+                            (some-> % :context :re-frame.core :event-ref)) %) keywords)))
+    (testing "keyword used as param in a dispatch not resulting in subscription-ref"
+      (is (some #(when (and (= "bar" (:name %)) (some-> % :context :re-frame.core :in-id (= simple-dispatch-id))) %) keywords))
+      (is (some #(when (and (= "bar" (:name %)) (some-> % :context :re-frame.core :in-id (= fx-dispatch-id))) %) keywords))
+      (is (some #(when (and (= "bar" (:name %)) (some-> % :context :re-frame.core :in-id (= later-dispatch-id))) %) keywords))
+      (is (some #(when (and (= "bar" (:name %)) (some-> % :context :re-frame.core :in-id (= multiple-dispatch-id))) %) keywords))
+      (is (not-any? #(when (and (= "bar" (:name %)) (some-> % :context :re-frame.core :event-ref)) %) keywords)))))
+
+(deftest re-frame-inject-cofx-test
+  (let [analysis (:analysis (with-in-str
+                              "(ns foo (:require [re-frame.core :as rf]))
+(rf/reg-cofx :foo (fn [cofx _] (assoc :cofx :bar :goo)))
+(rf/reg-event-fx :use-foo [(rf/inject-cofx :foo)] (fn [{:keys [db bar]}] {:db (assoc db :lolfoo bar)}))
+"
+                              (clj-kondo/run! {:lang :cljs :lint ["-"] :config
+                                               {:analysis {:context [:re-frame.core]
+                                                           :keywords true}}})))
+        keywords (:keywords analysis)
+        foo-cofx-id (some (partial re-frame-id "foo") keywords)
+        use-foo-id (some (partial re-frame-id "use-foo") keywords)]
+    (is foo-cofx-id)
+    (testing "cofx in inject-cofx is tracked"
+      (is (some #(when (and (= "foo" (:name %))
+                            (= use-foo-id (-> % :context :re-frame.core :in-id))
+                            (some-> % :context :re-frame.core :cofx-ref)) %) keywords)))))
 
 (comment
   (context-test)

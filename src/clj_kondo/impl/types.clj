@@ -12,6 +12,8 @@
     [tag sexpr]]
    [clojure.string :as str]))
 
+(set! *warn-on-reflection* true)
+
 (def built-in-specs
   {'clojure.core clojure-core
    'cljs.core cljs-core
@@ -378,7 +380,9 @@
         (emit-missing-required-key! ctx arg k)))))
 
 (defn lint-map! [ctx s a t]
-  (cond (keyword? t)
+  (cond (and (:nilable s) (= :nil t))
+        nil
+        (keyword? t)
         (when-not (match? t :map)
           (emit-non-match! ctx :map a t))
         :else

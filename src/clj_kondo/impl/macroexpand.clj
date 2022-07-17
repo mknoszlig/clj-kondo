@@ -4,6 +4,8 @@
    [clj-kondo.impl.utils :refer [parse-string tag vector-node list-node token-node]]
    [clojure.walk :as walk]))
 
+(set! *warn-on-reflection* true)
+
 (defn with-meta-of [x y]
   (let [m (meta y)
         m* (:meta y)
@@ -95,13 +97,36 @@
   [_ctx expr]
   (let [[ctor-node & children] (:children expr)
         ctor (:value ctor-node)
-        ctor-name (name ctor)
+        ctor-name (str ctor)
         ctor-name (-> ctor-name
                       (subs 0 (dec (count ctor-name)))
                       symbol)
         ctor-node (with-meta-of (token-node ctor-name)
                     ctor-node)]
-    (list-node (list* (token-node 'new) ctor-node children))))
+    (with-meta-of (list-node (list* (token-node 'new) ctor-node children))
+      expr)))
+
+(defn expand-method-invocation
+  [_ctx expr]
+  (let [[meth-node invoked & args] (:children expr)
+        meth (:value meth-node)
+        meth-name (str meth)
+        meth (-> meth-name
+                 (subs 1)
+                 symbol)
+        meth-node (with-meta-of (token-node meth)
+                    meth-node)]
+    (with-meta-of (list-node (list* (token-node '.) invoked meth-node args))
+      expr)))
+
+(defn expand-double-dot
+  [_ctx expr]
+  (loop [[x form & more] (rest (:children expr))]
+    (let [node (with-meta-of (list-node [(token-node '.) x form])
+                 expr)]
+      (if more
+        (recur (cons node more) )
+        node))))
 
 (defn find-children
   "Recursively filters children by pred"
@@ -142,7 +167,8 @@
                          :col (inc col)))
         arg-list (vector-node
                   (map #(with-meta (token-node %)
-                          {:clj-kondo/mark-used true})
+                          {:clj-kondo/mark-used true
+                           :clj-kondo/skip-reg-binding true})
                        (if varargs?
                          (concat args '[& %&])
                          args)))

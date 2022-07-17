@@ -2,13 +2,13 @@
   {:no-doc true}
   (:refer-clojure :exclude [ns-name])
   (:require
-    [clj-kondo.impl.analysis :as analysis]
-    [clj-kondo.impl.analyzer.common :as common]
-    [clj-kondo.impl.findings :as findings]
-    [clj-kondo.impl.metadata :as meta]
-    [clj-kondo.impl.namespace :as namespace]
-    [clj-kondo.impl.utils :as utils :refer [tag one-of symbol-from-token kw->sym assoc-some symbol-token?]]
-    [clojure.string :as str])
+   [clj-kondo.impl.analysis :as analysis]
+   [clj-kondo.impl.analyzer.common :as common]
+   [clj-kondo.impl.findings :as findings]
+   [clj-kondo.impl.metadata :as meta]
+   [clj-kondo.impl.namespace :as namespace]
+   [clj-kondo.impl.utils :as utils :refer [tag one-of symbol-from-token kw->sym assoc-some symbol-token?]]
+   [clojure.string :as str])
   (:import [clj_kondo.impl.rewrite_clj.node.seq NamespacedMapNode]))
 
 (set! *warn-on-reflection* true)
@@ -73,17 +73,17 @@
                        :name (:name resolved)
                        :alias (when-not (:alias destructuring) (:alias resolved))
                        :ns (or (:ns destructuring) (:ns resolved))))))
-     (when (and keyword-val (:namespaced? expr))
+     (when (and keyword-val (:namespaced? expr) (namespace keyword-val))
        (let [symbol-val (kw->sym keyword-val)
              {resolved-ns :ns}
-             (namespace/resolve-name ctx ns-name symbol-val)]
+             (namespace/resolve-name ctx false ns-name symbol-val nil)]
          (if resolved-ns
            (namespace/reg-used-namespace! ctx
                                           (-> ns :name)
                                           resolved-ns)
            (namespace/reg-unresolved-namespace! ctx ns-name
                                                 (with-meta (symbol (namespace symbol-val))
-                                                           (meta expr)))))))))
+                                                  (meta expr)))))))))
 
 (defn analyze-namespaced-map [ctx ^NamespacedMapNode expr]
   (let [children (:children expr)
@@ -173,7 +173,7 @@
                           interop? :interop?
                           resolved-core? :resolved-core?
                           :as _m}
-                         (let [v (namespace/resolve-name ctx ns-name symbol-val)]
+                         (let [v (namespace/resolve-name ctx false ns-name symbol-val expr)]
                            (when-not syntax-quote?
                              (when-let [n (:unresolved-ns v)]
                                (namespace/reg-unresolved-namespace!
@@ -182,10 +182,11 @@
                                   (meta expr)))))
                            (if (:unresolved? v)
                              (let [symbol-str (str symbol-val)]
-                               (if (str/ends-with? (str symbol-val) ".")
-                                 (namespace/resolve-name ctx ns-name
+                               (if (and (not= "." symbol-str)
+                                        (str/ends-with? symbol-str "."))
+                                 (namespace/resolve-name ctx true ns-name
                                                          (symbol (subs symbol-str
-                                                                       0 (dec (count symbol-str)))))
+                                                                       0 (dec (count symbol-str)))) expr)
                                  v))
                              v))
                          m (meta expr)
@@ -199,38 +200,40 @@
                        (namespace/reg-used-namespace! ctx
                                                       ns-name
                                                       resolved-ns)
-                       (namespace/reg-var-usage! ctx ns-name
-                                                 {:type :use
-                                                  :name (with-meta
-                                                          resolved-name
-                                                          m)
-                                                  :resolved-ns resolved-ns
-                                                  :ns ns-name
-                                                  :alias resolved-alias
-                                                  :unresolved? unresolved?
-                                                  :clojure-excluded? clojure-excluded?
-                                                  :row row
-                                                  :end-row end-row
-                                                  :col col
-                                                  :end-col end-col
-                                                  :base-lang (:base-lang ctx)
-                                                  :lang (:lang ctx)
-                                                  :top-ns (:top-ns ctx)
-                                                  :filename (:filename ctx)
-                                                  :unresolved-symbol-disabled?
-                                                  (or syntax-quote?
-                                                      ;; e.g. usage of clojure.core, clojure.string, etc in (:require [...])
-                                                      (= symbol-val (get (:qualify-ns ns) symbol-val)))
-                                                  :private-access? (or syntax-quote? (:private-access? ctx))
-                                                  :callstack (:callstack ctx)
-                                                  :config (:config ctx)
-                                                  :in-def (:in-def ctx)
-                                                  :context (:context ctx)
-                                                  :simple? simple?
-                                                  :interop? interop?
-                                                  ;; save some memory
-                                                  :expr (when-not dependencies expr)
-                                                  :resolved-core? resolved-core?})))))
+                       (when (:analyze-var-usages? ctx)
+                         (namespace/reg-var-usage! ctx ns-name
+                                                   {:type :use
+                                                    :name (with-meta
+                                                            resolved-name
+                                                            m)
+                                                    :resolved-ns resolved-ns
+                                                    :ns ns-name
+                                                    :alias resolved-alias
+                                                    :defmethod (:defmethod ctx)
+                                                    :unresolved? unresolved?
+                                                    :clojure-excluded? clojure-excluded?
+                                                    :row row
+                                                    :end-row end-row
+                                                    :col col
+                                                    :end-col end-col
+                                                    :base-lang (:base-lang ctx)
+                                                    :lang (:lang ctx)
+                                                    :top-ns (:top-ns ctx)
+                                                    :filename (:filename ctx)
+                                                    :unresolved-symbol-disabled?
+                                                    (or syntax-quote?
+                                                        ;; e.g. usage of clojure.core, clojure.string, etc in (:require [...])
+                                                        (= symbol-val (get (:qualify-ns ns) symbol-val)))
+                                                    :private-access? (or syntax-quote? (:private-access? ctx))
+                                                    :callstack (:callstack ctx)
+                                                    :config (:config ctx)
+                                                    :in-def (:in-def ctx)
+                                                    :context (:context ctx)
+                                                    :simple? simple?
+                                                    :interop? interop?
+                                                    ;; save some memory
+                                                    :expr (when-not dependencies expr)
+                                                    :resolved-core? resolved-core?}))))))
                (do
                  ;; (prn (type (utils/sexpr expr)) (:callstack ctx) (:len ctx) (:idx ctx))
                  (when-let [idx (:idx ctx)]

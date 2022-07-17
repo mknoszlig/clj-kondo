@@ -7,6 +7,7 @@
 
 (deftest missing-test-assertion-test
   (is (empty? (lint! "(ns foo (:require [clojure.test :as t])) (t/deftest (t/is (odd? 1)))")))
+  (is (empty? (lint! "(ns foo (:require [clojure.test :as t])) (t/deftest- (t/is (odd? 1)))")))
   (assert-submaps
    '({:file "<stdin>", :row 1, :col 57, :level :warning, :message "missing test assertion"})
    (lint! "(ns foo (:require [clojure.test :as t])) (t/deftest foo (odd? 1))"))
@@ -71,18 +72,17 @@
 
 (deftest testing-str-analysis
   (let [usages (filter (comp :clojure.test :context)
-                      (-> (with-in-str
-                            (pr-str
-                             '(do (require '[clojure.test :refer [deftest is testing]])
-                                  (deftest foo
-                                    (testing "everything works correctly"
-                                      (is (= 1 1))))))
-                            (clj-kondo/run! {:lint ["-"]
-                                             :config {:output
-                                                      {:analysis
+                       (-> (with-in-str
+                             (pr-str
+                              '(do (require '[clojure.test :refer [deftest is testing]])
+                                   (deftest foo
+                                     (testing "everything works correctly"
+                                       (is (= 1 1))))))
+                             (clj-kondo/run! {:lint ["-"]
+                                              :config {:analysis
                                                        {:context
-                                                        [:clojure.test]}}}}))
-                          :analysis :var-usages))
+                                                        [:clojure.test]}}}))
+                           :analysis :var-usages))
         usage (first usages)]
     (is (= 1 (count usages)))
     (is (= 'testing (:name usage)))

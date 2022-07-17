@@ -1,7 +1,7 @@
 (ns clj-kondo.impl.hooks-test
   (:require
+   [clj-kondo.hooks-api :as hooks-api]
    [clj-kondo.impl.core :as core]
-   [clj-kondo.impl.hooks :as hooks-api]
    [clj-kondo.impl.utils :as utils :refer [parse-string *ctx*]]
    [clj-kondo.test-utils :refer [lint! make-dirs with-temp-dir]]
    [clojure.java.io :as io]
@@ -70,3 +70,13 @@ there
                    (hooks-api/ns-analysis 'baz))
                  (binding [*ctx* {:cache-dir full-cache-dir}]
                    (hooks-api/ns-analysis 'baz {:lang :cljs})))))))))
+
+(deftest macroexpand-locations-test
+  (let [node (parse-string "(foo.bar/baz 1 (2 3 x))")
+        m (meta node)
+        sexpr (hooks-api/sexpr node)
+        sexpr `(do (let [~'x 1] ~sexpr))
+        node (hooks-api/coerce sexpr)
+        node (#'hooks-api/annotate node m)
+        nodes (tree-seq :children :children node)]
+    (is (every? (comp :row meta) nodes))))

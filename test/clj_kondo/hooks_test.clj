@@ -6,6 +6,8 @@
    [clojure.string :as str]
    [clojure.test :refer [deftest testing is]]))
 
+(set! *warn-on-reflection* true)
+
 (deftest macroexpand-test
   (assert-submaps
    '({:file "corpus/macroexpand.clj", :row 16, :col 7, :level :error, :message "Expected: number, received: keyword."}
@@ -134,7 +136,7 @@
                                "\"<stdin>\""
                                "true\n"])))))))
 
-(deftest confg-test
+(deftest config-test
   (when-not native?
     (let [s (with-out-str (lint! "
 (ns bar
@@ -163,10 +165,22 @@
           s (str/replace s "\r\n" "\n")]
       (is (= s "{:a 1, :b 2}\n{:a 1, :b 2}\n")))))
 
-#_(fn [{:keys [:node]}]
-  (let [children (next (:children node))
-        new-node (api/list-node (list* (api/token-node 'do) children))]
-    {:node new-node}))
+(deftest custom-lint-warning-ignore-test
+  (when-not native?
+    (let [res (lint! "
+(ns bar
+  {:clj-kondo/config
+    '{:hooks {:analyze-call {foo/hook \"(fn [{:keys [node]}]
+                                         (clj-kondo.hooks-api/reg-finding!
+                                          (assoc (meta node) :message \\\"Yolo\\\"
+                                                                                 :type :foo)))\"}}}}
+  (:require [foo :refer [hook]]))
+
+(hook 1 2 3)
+#_:clj-kondo/ignore (hook 1 2 3)"
+                   {:hooks {:__dangerously-allow-string-hooks__ true}
+                    :linters {:foo {:level :error}}})]
+      (assert-submaps '({:file "<stdin>", :row 10, :col 1, :level :error, :message "Yolo"}) res))))
 
 (deftest redundant-do-let-test
   (testing "hook code generating do or let won't be reported as redundant"
@@ -207,10 +221,12 @@ children))]
 
 (deftest macroexpand2-test
   (assert-submaps
-   '({:file "corpus/macroexpand2.cljs", :row 19, :col 1, :level :error, :message "Unresolved symbol: foobar"}
-     {:file "corpus/macroexpand2.cljs", :row 31, :col 3, :level :error, :message "Expected: number, received: string."}
-     {:file "corpus/macroexpand2.cljs", :row 31, :col 3, :level :error, :message "Expected: number, received: keyword."}
-     {:file "corpus/macroexpand2.cljs", :row 37, :col 3, :level :error, :message "Expected: number, received: string."} {:file "corpus/macroexpand2.cljs", :row 37, :col 3, :level :error, :message "Expected: number, received: nil."})
+   '({:file "corpus/macroexpand2.cljs", :row 20, :col 10, :level :error, :message "Unresolved symbol: foobar"}
+     {:file "corpus/macroexpand2.cljs", :row 32, :col 3, :level :error, :message "Expected: number, received: string."}
+     {:file "corpus/macroexpand2.cljs", :row 32, :col 3, :level :error, :message "Expected: number, received: keyword."}
+     {:file "corpus/macroexpand2.cljs", :row 38, :col 3, :level :error, :message "Expected: number, received: string."}
+     {:file "corpus/macroexpand2.cljs", :row 38, :col 3, :level :error, :message "Expected: number, received: nil."}
+     {:file "corpus/macroexpand2.cljs", :row 43, :col 1, :level :warning, :message "Unused private var macroexpand2/private-var"})
    (let [results (lint! (io/file "corpus" "macroexpand2.cljs")
                         {:linters {:unresolved-symbol {:level :error}
                                    :unused-binding {:level :warning}
@@ -236,7 +252,7 @@ children))]
                                                  (let [child (second (:children node))
                                                        new-node (assoc child :context {:my-hook {:can-set-context true}})]
                                                    {:node new-node}))"}}
-                         :output {:analysis {:keywords true :context true}}}}))
+                         :analysis {:keywords true :context true}}}))
             {:keys [keywords]} analysis
             a-keyword (some #(when (= "a" (:name %))
                                %) keywords)
@@ -260,10 +276,45 @@ children))]
                                                          new-node (assoc child :context {:my-hook {:can-set-context true}})]
                                                      {:node new-node
                                                       :context {:yolo true}}))"}}
-                         :output {:analysis {:keywords true :context true}}}}))
+                         :analysis {:keywords true :context true}}}))
             {:keys [keywords]} analysis
             a-keyword (some #(when (= "a" (:name %))
                                %) keywords)
             context (:context a-keyword)]
         (is a-keyword)
         (is (= {:my-hook {:can-set-context true}, :yolo true} context))))))
+
+(deftest pprint-test
+  ;; this doesn't test the output
+  ;; however, the "no empty docstring" linter would catch the error
+  ;; if there was no output
+  (testing "hook code supports pprint"
+    (let [res (lint! "
+      
+(ns bar
+  {:clj-kondo/config
+    '{:hooks {:analyze-call {
+foo/defdoced \"
+
+(require '[clj-kondo.hooks-api :as api])
+(require '[clojure.pprint :as pprint])
+
+(fn [{:keys [:node]}]
+  (let [[_defdoced name value] (:children node)
+        new-node (api/list-node
+        (list
+          (api/token-node 'def)
+          name
+          (api/string-node
+            (with-out-str (pprint/pprint value)))
+          value))]
+    {:node new-node}))
+\"
+
+}}}}
+  (:require [foo :refer [defdoced]]))
+
+(defdoced mysuperthing {:a 1 :b 2 :c {:d 3 :e 4}})
+"
+                     {:hooks {:__dangerously-allow-string-hooks__ true}})]
+      (is (empty? res)))))

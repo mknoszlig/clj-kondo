@@ -108,7 +108,8 @@
 
 (deftest analyze-input-test
   (let [analyze (fn [^String source]
-                  (let [ctx {:config {:linters {:syntax {:level :error}} :output {:analysis true :format :edn}}
+                  (let [ctx {:config {:linters {:syntax {:level :error}} :output {:format :edn} :analysis true}
+                             :files (atom 0)
                              :filename "-"
                              :base-lang :clj
                              :lang :clj
@@ -117,7 +118,7 @@
                              :namespaces (atom {})
                              :ignores (atom {})
                              :bindings {}}]
-                    (ana/analyze-input ctx "test.clj" source :clj false)
+                    (ana/analyze-input ctx "test.clj" "file:test.clj" source :clj false)
                     ctx))]
     (testing "unmatched delimiters"
       (is (= [{:type :syntax

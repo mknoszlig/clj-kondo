@@ -1,6 +1,7 @@
 (ns clj-kondo.core
   (:refer-clojure :exclude [run!])
   (:require
+   [aaaa-this-has-to-be-first.because-patches]
    [cheshire.core :as cheshire]
    [clj-kondo.impl.cache :as cache]
    [clj-kondo.impl.config :refer [merge-config!]]
@@ -10,6 +11,8 @@
    [clj-kondo.impl.overrides :refer [overrides]]
    [clj-kondo.impl.utils :as utils]
    [clojure.java.io :as io]))
+
+(set! *warn-on-reflection* true)
 
 ;;;; Public API
 
@@ -25,10 +28,8 @@
         (when (:progress output-cfg) (binding [*out* *err*]
                                        (println)))
         (let [format-fn (core-impl/format-output config)]
-          (doseq [{:keys [:filename :message
-                          :level :row :col] :as _finding}
-                  findings]
-            (println (format-fn filename row col level message)))
+          (doseq [finding findings]
+            (println (format-fn finding)))
           (when (:summary output-cfg)
             (let [{:keys [:error :warning :duration]} summary]
               (printf "linting took %sms, " duration)
@@ -38,7 +39,7 @@
       (let [output (cond-> {:findings findings}
                      (:summary output-cfg)
                      (assoc :summary summary)
-                     (:analysis output-cfg)
+                     analysis
                      (assoc :analysis analysis))]
         (prn output))
       :json
@@ -46,7 +47,7 @@
                 (cond-> {:findings findings}
                   (:summary output-cfg)
                   (assoc :summary summary)
-                  (:analysis output-cfg)
+                  analysis
                   (assoc :analysis analysis))))))
   (flush)
   nil)
@@ -80,6 +81,9 @@
 
   - `:copy-configs`: optional. A boolean indicating if scanned hooks should be copied to clj-kondo config dir.`
 
+  - `:skip-lint`: optional. A boolean indicating if linting should be
+  skipped. Other tasks like copying configs will still be done if `:copy-configs` is true.`
+
   - `:debug`: optional. Print debug info.
 
   Returns a map with `:findings`, a seqable of finding maps, a
@@ -99,6 +103,8 @@
            :dependencies
            :copy-configs
            :custom-lint-fn
+           :file-analyzed-fn
+           :skip-lint
            :debug]
     :or {cache true}}]
   (let [start-time (System/currentTimeMillis)
@@ -114,23 +120,31 @@
         cache-dir (when cache (core-impl/resolve-cache-dir cfg-dir cache cache-dir))
         files (atom 0)
         findings (atom [])
-        analysis-cfg (get-in config [:output :analysis])
+        analysis-cfg (get config :analysis (get-in config [:output :analysis]))
+        analyze-var-usages? (get analysis-cfg :var-usages true)
+        analyze-var-defs-shallowly? (get-in analysis-cfg [:var-definitions :shallow])
         analyze-locals? (get analysis-cfg :locals)
         analyze-keywords? (get analysis-cfg :keywords)
         analyze-protocol-impls? (get analysis-cfg :protocol-impls)
+        analyze-instance-invocations? (get analysis-cfg :instance-invocations)
         analysis-var-meta (some-> analysis-cfg :var-definitions :meta)
         analysis-ns-meta (some-> analysis-cfg :namespace-definitions :meta)
         analysis-context (some-> analysis-cfg :context)
+        analyze-java-class-defs? (some-> analysis-cfg :java-class-definitions)
+        analyze-java-class-usages? (some-> analysis-cfg :java-class-usages)
         analyze-meta? (or analysis-var-meta analysis-ns-meta)
         analysis (when analysis-cfg
                    (atom (cond-> {:namespace-definitions []
                                   :namespace-usages []
-                                  :var-definitions []
-                                  :var-usages []}
+                                  :var-definitions []}
+                           analyze-var-usages? (assoc :var-usages [])
                            analyze-locals? (assoc :locals []
                                                   :local-usages [])
                            analyze-keywords? (assoc :keywords [])
-                           analyze-protocol-impls? (assoc :protocol-impls []))))
+                           analyze-protocol-impls? (assoc :protocol-impls [])
+                           analyze-java-class-defs? (assoc :java-class-definitions [])
+                           analyze-java-class-usages? (assoc :java-class-usages [])
+                           analyze-instance-invocations? (assoc :instance-invocations []))))
         used-nss (atom {:clj #{}
                         :cljs #{}
                         :cljc #{}})
@@ -140,6 +154,7 @@
              (delay (core-impl/config-hash config))
              :dependencies (or dependencies no-warnings)
              :copy-configs copy-configs
+             :skip-lint skip-lint
              :config-dir cfg-dir
              :config config
              :classpath classpath
@@ -151,15 +166,21 @@
              :analysis analysis
              :cache-dir cache-dir
              :used-namespaces used-nss
+             :file-analyzed-fn file-analyzed-fn
              :ignores (atom {})
              :id-gen (when analyze-locals? (atom 0))
+             :analyze-var-usages? analyze-var-usages?
              :analyze-locals? analyze-locals?
              :analyze-protocol-impls? analyze-protocol-impls?
              :analyze-keywords? analyze-keywords?
              :analyze-arglists? (get analysis-cfg :arglists)
+             :analyze-java-class-defs? analyze-java-class-defs?
+             :analyze-java-class-usages? analyze-java-class-usages?
              :analysis-var-meta analysis-var-meta
              :analysis-ns-meta analysis-ns-meta
              :analyze-meta? analyze-meta?
+             :analyze-var-defs-shallowly? analyze-var-defs-shallowly?
+             :analyze-instance-invocations? analyze-instance-invocations?
              :analysis-context analysis-context
              ;; set of files which should not be flushed into cache
              ;; most notably hook configs, as they can conflict with original sources
@@ -169,49 +190,57 @@
              :allow-string-hooks (-> config :hooks :__dangerously-allow-string-hooks__)
              :debug debug}
         lang (or lang :clj)
+        ;; primary file analysis and initial lint
         _ (core-impl/process-files (if parallel
                                      (assoc ctx :parallel parallel)
                                      ctx) lint lang filename)
+        ;;_ (prn (some-> analysis deref :java-class-usages))
         ;; _ (prn :used-nss @used-nss)
-        idacs (core-impl/index-defs-and-calls ctx)
-        idacs (cache/sync-cache idacs cfg-dir cache-dir)
-        idacs (overrides idacs)
-        _ (when (and dependencies (not analysis))
-            ;; analysis is called from lint-var-usage, this can probably happen somewhere else
-            (l/lint-var-usage ctx idacs))
+        idacs (when (or dependencies (not skip-lint) analysis)
+                (-> (core-impl/index-defs-and-calls ctx)
+                    (cache/sync-cache cfg-dir cache-dir)
+                    (overrides)))
         _ (when-not dependencies
-            (l/lint-var-usage ctx idacs)
-            (l/lint-unused-namespaces! ctx)
-            (l/lint-unused-private-vars! ctx)
-            (l/lint-bindings! ctx)
-            (l/lint-unresolved-symbols! ctx)
-            (l/lint-unresolved-vars! ctx)
-            (l/lint-unused-imports! ctx)
-            (l/lint-unresolved-namespaces! ctx))
+            (if skip-lint
+              (when analysis
+                ;; Still need to call l/lint-var-usages, to have analysis/reg-usage! called.
+                ;; Would be more consistent to invert relationship, calling linter from analysis.
+                (l/lint-var-usage ctx idacs))
+              (do
+                (l/lint-var-usage ctx idacs)
+                (l/lint-unused-namespaces! ctx)
+                (l/lint-unused-private-vars! ctx)
+                (l/lint-bindings! ctx)
+                (l/lint-unresolved-symbols! ctx)
+                (l/lint-unresolved-vars! ctx)
+                (l/lint-unused-imports! ctx)
+                (l/lint-unresolved-namespaces! ctx)
+                (l/lint-discouraged-namespaces! ctx))))
         _ (when custom-lint-fn
             (binding [utils/*ctx* ctx]
               (custom-lint-fn (cond->
-                                  {:config config
-                                   :reg-finding!
-                                   (fn [m]
-                                     (findings/reg-finding!
-                                      (assoc utils/*ctx*
-                                             :lang (or (:lang m)
-                                                       (core-impl/lang-from-file
-                                                        (:filename m) lang))) m))}
+                               {:config config
+                                :reg-finding!
+                                (fn [m]
+                                  (findings/reg-finding!
+                                   (assoc utils/*ctx*
+                                          :lang (or (:lang m)
+                                                    (core-impl/lang-from-file
+                                                     (:filename m) lang))) m))}
                                 analysis-cfg
                                 (assoc :analysis @analysis)))))
         all-findings @findings
-        all-findings (core-impl/filter-findings config all-findings)
+        grouped-findings (group-by (juxt :filename :row :col :type :cljc) all-findings)
+        all-findings (core-impl/filter-findings config grouped-findings)
         all-findings (into [] (dedupe) (sort-by (juxt :filename :row :col) all-findings))
         summary (core-impl/summarize all-findings)
         duration (- (System/currentTimeMillis) start-time)
         summary (assoc summary :duration duration :files @files)]
     (cond->
-        {:findings all-findings
-         :config config
-         :summary summary}
-      analysis-cfg
+     {:findings all-findings
+      :config config
+      :summary summary}
+      analysis
       (assoc :analysis @analysis))))
 
 (defn merge-configs

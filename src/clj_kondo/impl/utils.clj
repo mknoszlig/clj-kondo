@@ -1,21 +1,22 @@
 (ns clj-kondo.impl.utils
   {:no-doc true}
   (:require
+   [babashka.fs :as fs]
    [clj-kondo.impl.rewrite-clj.node.keyword :as k]
    [clj-kondo.impl.rewrite-clj.node.protocols :as node]
    [clj-kondo.impl.rewrite-clj.node.seq :as seq]
    [clj-kondo.impl.rewrite-clj.node.string :as node-string]
    [clj-kondo.impl.rewrite-clj.node.token :as token]
    [clj-kondo.impl.rewrite-clj.parser :as p]
+   [clojure.java.io :as io]
    [clojure.string :as str]))
+
+(set! *warn-on-reflection* true)
 
 ;;; export rewrite-clj functions
 
 (defn tag [expr]
   (node/tag expr))
-
-(defn sexpr [expr]
-  (node/sexpr expr))
 
 (def map-node seq/map-node)
 (def vector-node seq/vector-node)
@@ -23,6 +24,7 @@
 (def token-node token/token-node)
 (def keyword-node k/keyword-node)
 (def string-node node-string/string-node)
+(def sexpr node/sexpr)
 
 (defn list-node? [n]
   (and (instance? clj_kondo.impl.rewrite_clj.node.seq.SeqNode n)
@@ -43,6 +45,9 @@
           ?sym (:value first-child)]
       (when (symbol? ?sym)
         ?sym))))
+
+(defn keyword-node? [n]
+  (instance? clj_kondo.impl.rewrite_clj.node.keyword.KeywordNode n))
 
 (defn node->keyword
   "Returns keyword from node, if it contains any."
@@ -142,12 +147,11 @@
   ([])
   ([a] a)
   ([a b]
-   (cond (and (map? a) (map? b))
-         (merge-with deep-merge a b)
-         (and (sequential? a) (sequential? b))
-         (into a b)
-         (and (set? a) (set? b))
-         (into a b)
+   (cond (when-let [m (meta b)]
+           (:replace m)) b
+         (and (map? a) (map? b)) (merge-with deep-merge a b)
+         (and (or (sequential? a) (set? a))
+              (or (sequential? b) (set? b))) (into a b)
          (false? b) b
          :else (or b a)))
   ([a b & more]
@@ -369,6 +373,21 @@
 ;;      ks
 ;;      (map (comp #(select-keys % ks) bean)
 ;;           (take depth (.getStackTrace (Thread/currentThread)))))))
+
+(defn ->uri [jar entry file]
+  (cond file (when (fs/exists? file)
+               (str (.toURI (fs/file file))))
+        (and jar entry)
+        (str "jar:file:" (.toURI (io/file jar)) "!/" entry)))
+
+(defn file-ext [fn]
+  (when-let [last-dot (str/last-index-of fn ".")]
+    (subs fn (inc last-dot))))
+
+(defn strip-file-ext [fn]
+  (if-let [last-dot (str/last-index-of fn ".")]
+    (subs fn 0 last-dot)
+    fn))
 
 ;;;; Scratch
 

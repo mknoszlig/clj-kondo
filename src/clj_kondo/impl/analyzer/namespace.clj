@@ -3,7 +3,9 @@
   (:refer-clojure :exclude [ns-name])
   (:require
    [clj-kondo.impl.analysis :as analysis]
+   [clj-kondo.impl.analysis.java :as java]
    [clj-kondo.impl.analyzer.common :as common]
+   [clj-kondo.impl.analyzer.usages :as usages]
    [clj-kondo.impl.cache :as cache]
    [clj-kondo.impl.config :as config]
    [clj-kondo.impl.docstring :as docstring]
@@ -17,6 +19,7 @@
    [clojure.set :as set]
    [clojure.string :as str]))
 
+(set! *warn-on-reflection* true)
 (def valid-ns-name? (some-fn symbol? string?))
 
 (defn- prefix-spec?
@@ -169,20 +172,21 @@
                                    m)
                                opt-expr-children (:children opt-expr)]
                            (run! #(utils/handle-ignore ctx %) opt-expr-children)
-                           (run! #(namespace/reg-var-usage! ctx current-ns-name
-                                                            (let [m (meta %)]
-                                                              (assoc m
-                                                                     :type :use
-                                                                     :name (with-meta (sexpr %) m)
-                                                                     :resolved-ns ns-name
-                                                                     :ns current-ns-name
-                                                                     :refer true
-                                                                     :lang lang
-                                                                     :base-lang base-lang
-                                                                     :filename filename
-                                                                     :config config
-                                                                     :expr %)))
-                                 opt-expr-children)
+                           (when (:analyze-var-usages? ctx)
+                             (run! #(namespace/reg-var-usage! ctx current-ns-name
+                                                              (let [m (meta %)]
+                                                                (assoc m
+                                                                       :type :use
+                                                                       :name (with-meta (sexpr %) m)
+                                                                       :resolved-ns ns-name
+                                                                       :ns current-ns-name
+                                                                       :refer true
+                                                                       :lang lang
+                                                                       :base-lang base-lang
+                                                                       :filename filename
+                                                                       :config config
+                                                                       :expr %)))
+                                   opt-expr-children))
                            (swap! (:used-namespaces ctx) update (:base-lang ctx) conj ns-name)
                            (update m :referred into
                                    (map #(with-meta (sexpr %)
@@ -357,6 +361,8 @@
 
 (defn analyze-ns-decl
   [ctx expr]
+  (when (:analyze-keywords? ctx)
+    (usages/analyze-usages2 ctx expr {:quote? true}))
   (let [lang (:lang ctx)
         base-lang (:base-lang ctx)
         filename (:filename ctx)
@@ -395,15 +401,6 @@
                                (when (some-> metadata :doc str)
                                  (some docstring/docs-from-meta ns-name-metas)))
         global-config (:global-config ctx)
-        local-config (-> ns-meta :clj-kondo/config)
-        local-config (if (and (seq? local-config) (= 'quote (first local-config)))
-                       (second local-config)
-                       local-config)
-        merged-config (if local-config (config/merge-config! global-config local-config)
-                          global-config)
-        ctx (if local-config
-              (assoc ctx :config merged-config)
-              ctx)
         ns-name (or
                  (when-let [?name (sexpr ns-name-expr)]
                    (if (symbol? ?name) ?name
@@ -414,6 +411,44 @@
                                     :syntax
                                     "namespace name expected"))))
                  'user)
+        ns-group (config/ns-group global-config ns-name)
+        config-in-ns (let [config-in-ns (:config-in-ns global-config)]
+                       (get config-in-ns ns-group))
+        local-config (-> ns-meta :clj-kondo/config)
+        local-config (if (and (seq? local-config) (= 'quote (first local-config)))
+                       (second local-config)
+                       local-config)
+        merged-config (if config-in-ns
+                        (config/merge-config! global-config config-in-ns)
+                        global-config)
+        merged-config (if local-config
+                        (config/merge-config! merged-config local-config)
+                        merged-config)
+        ctx (if (or config-in-ns local-config)
+              (assoc ctx :config merged-config)
+              ctx)
+        _ (when (and (not= "<stdin>" filename)
+                     (not= 'user ns-name)
+                     (not (identical? :off (-> ctx :config :linters :namespace-name-mismatch :level))))
+            ;; users should be able to disable linter without hitting this code-path
+            (let [filename* (some-> filename
+                                    ^String (utils/strip-file-ext)
+                                    ^String (.replace "/" ".")
+                                    ;; Windows, but do unconditionally, see issue 1607
+                                    (.replace "\\" "."))
+                  munged-ns (str (munge ns-name))]
+              (when (and filename*
+                         (not (str/ends-with? filename* munged-ns)))
+                (when-not (some (fn [m]
+                                  (and (identical? :namespace-name-mismatch (:type m))
+                                       (= filename (:filename m))))
+                                @(:findings ctx))
+                  (findings/reg-finding!
+                   ctx
+                   (node->line filename
+                               ns-name-expr
+                               :namespace-name-mismatch
+                               (str "Namespace name does not match file name: " ns-name)))))))
         clauses children
         _ (run! #(utils/handle-ignore ctx %) children)
         kw+libspecs (for [?require-clause clauses
@@ -460,17 +495,22 @@
                       (merge-with into
                                   analyzed-require-clauses
                                   refer-clj))
-             local-config (assoc :config merged-config)
+             (or config-in-ns local-config) (assoc :config merged-config)
              (identical? :clj lang) (update :qualify-ns
                                             #(assoc % 'clojure.core 'clojure.core))
              (identical? :cljs lang) (update :qualify-ns
                                              #(assoc % 'cljs.core 'cljs.core
                                                      'clojure.core 'cljs.core)))]
-    (when (-> ctx :config :output :analysis)
+    (when (:analysis ctx)
+      (when (java/analyze-class-usages? ctx)
+        (doseq [[k v] imports]
+          (java/reg-class-usage! ctx (str v "." k) (assoc (meta k) :import true))))
       (analysis/reg-namespace! ctx filename row col
                                ns-name false (assoc-some {}
                                                          :user-meta (when (:analysis-ns-meta ctx)
                                                                       (conj (:user-meta metadata) meta-node-meta))
+                                                         :end-row (:end-row m)
+                                                         :end-col (:end-col m)
                                                          :name-row (:row metadata)
                                                          :name-col (:col metadata)
                                                          :name-end-row (:end-row metadata)
@@ -513,10 +553,12 @@
                                                                  utils/symbol-from-token)))
                                       (second children)))))
                            children)]
+    (when (:analyze-keywords? ctx)
+      (run! #(usages/analyze-usages2 ctx % {:quote? true}) libspecs))
     (let [analyzed
           (analyze-require-clauses ctx ns-name [[require-node libspecs]])]
       (namespace/reg-required-namespaces! ctx ns-name analyzed)
-      (when (-> ctx :config :output :analysis)
+      (when (:analysis ctx)
         (doseq [req (:required analyzed)]
           (let [{:keys [row col end-row end-col alias]} (meta req)
                 meta-alias (meta alias)]

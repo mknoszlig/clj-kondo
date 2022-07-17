@@ -1,7 +1,10 @@
 (ns clj-kondo.impl.config
   {:no-doc true}
   (:require
-   [clj-kondo.impl.utils :refer [deep-merge map-vals]]))
+   [clj-kondo.impl.utils :refer [deep-merge map-vals]]
+   [clojure.set :as set]))
+
+(set! *warn-on-reflection* true)
 
 (def default-config
   '{;; no linting inside calls to these functions/macros
@@ -41,8 +44,8 @@
               :unsorted-required-namespaces {:level :off}
               :unused-namespace {:level :warning
                                  ;; don't warn about these namespaces:
-                                 :exclude [#_clj-kondo.impl.var-info-gen]}
-                                 :simple-libspec false
+                                 :exclude [#_clj-kondo.impl.var-info-gen]
+                                 :simple-libspec false}
 
               :unresolved-symbol {:level :error
                                   :exclude [;; ignore globally:
@@ -117,7 +120,17 @@
               :loop-without-recur {:level :warning}
               :unexpected-recur {:level :error}
               :main-without-gen-class {:level :off}
-              :redundant-fn-wrapper {:level :off}}
+              :redundant-fn-wrapper {:level :off}
+              :namespace-name-mismatch {:level :error}
+              :non-arg-vec-return-type-hint {:level :warning}
+              :keyword-binding {:level :off}
+              :discouraged-var {:level :warning}
+              :discouraged-namespace {:level :warning}
+              :redundant-call {:level :off
+                               #_#_:exclude #{clojure.core/->}
+                               #_#_:include #{clojure.core/conj!}}
+              :warn-on-reflection {:level :off
+                                   :warn-only-on-interop true}}
     ;; :hooks {:macroexpand ... :analyze-call ...}
     :lint-as {cats.core/->= clojure.core/->
               cats.core/->>= clojure.core/->>
@@ -130,10 +143,9 @@
               compojure.core/defroutes clojure.core/def
               compojure.core/let-routes clojure.core/let}
     ;; :auto-load-configs true
-    :output {:format :text ;; or :edn
-             :summary true ;; outputs summary at end, only applicable to output :text
-             ;; outputs analyzed var definitions and usages of them
-             :analysis false
+    ;; :analysis ;; what to analyze and whether to output it
+    :output {:format :text ;; or :edn, or :json
+             :summary true ;; include summary in output
              ;; set to truthy to print progress while linting, only applicable to output :text
              :progress false
              ;; output can be filtered and removed by regex on filename. empty options leave the output untouched.
@@ -142,6 +154,9 @@
              ;; the output pattern can be altered using a template. use {{LEVEL}} to print the level in capitals.
              ;; the default template looks like this:
              ;; :pattern "{{filename}}:{{row}}:{{col}}: {{level}}: {{message}}"
+             ;; if below :show-rule-name-in-message is set to true, type (linter name) of reported the finding
+             ;; is appended to the end of the default pattern as " [{{type}}]"
+             :show-rule-name-in-message false
              :canonical-paths false}}) ;; set to true to see absolute file paths and jar files
 
 (defn merge-config!
@@ -152,9 +167,7 @@
        (let [cfg (cond-> cfg
                    (contains? (:linters cfg) :if)
                    (assoc-in [:linters :missing-else-branch] (:if (:linters cfg))))]
-         (if (:replace (meta cfg))
-           cfg
-           (deep-merge cfg* cfg))))))
+         (deep-merge cfg* cfg)))))
 
 (defn fq-sym->vec [fq-sym]
   (if-let [ns* (namespace fq-sym)]
@@ -369,6 +382,38 @@
         (let [{:keys [:exclude #_:include]} cfg]
           (or (not exclude)
               (contains? exclude sym)))))))
+
+(def redundant-call-included?
+  (let [redundant-call-vars '#{clojure.core/-> cljs.core/->
+                               clojure.core/->> cljs.core/->>
+                               clojure.core/cond-> cljs.core/cond->
+                               clojure.core/cond->> cljs.core/cond->>
+                               clojure.core/some-> cljs.core/some->
+                               clojure.core/some->> cljs.core/some->>
+                               clojure.core/partial cljs.core/partial
+                               clojure.core/comp cljs.core/comp
+                               clojure.core/merge cljs.core/merge}
+        delayed-cfg (fn [config]
+                      (let [cfg (get-in config [:linters :redundant-call])
+                            include (some-> (:include cfg) set)
+                            exclude (some-> (:exclude cfg) set)]
+                        (-> redundant-call-vars
+                            (set/union include)
+                            (set/difference exclude))))
+        delayed-cfg (memoize delayed-cfg)]
+    (fn [config sym]
+      (contains? (delayed-cfg config) sym))))
+
+(defn ns-group* [config ns-name]
+  (or (some (fn [{:keys [pattern
+                         name]}]
+              (when (and (string? pattern) (symbol? name)
+                         (re-matches (re-pattern pattern) (str ns-name)))
+                name))
+            (:ns-groups config))
+      ns-name))
+
+(def ns-group (memoize ns-group*))
 
 ;; (defn ns-group-1 [m full-ns-name]
 ;;   (when-let [r (:regex m)]

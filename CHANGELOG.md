@@ -2,6 +2,121 @@
 
 For a list of breaking changes, check [here](#breaking-changes).
 
+## Unreleased
+
+- [#1749](https://github.com/clj-kondo/clj-kondo/issues/1749): expose `clojure.pprint/pprint` to the hooks API
+- [#698](https://github.com/clj-kondo/clj-kondo/issues/698): output rule name with new output option `:show-rule-name-in-message true`. See example in [config guide](https://github.com/clj-kondo/clj-kondo/blob/master/doc/config.md#show-rule-name-in-message).
+- [#1735](https://github.com/clj-kondo/clj-kondo/issues/1735) Add support for nilable map type specs
+- [#1744](https://github.com/clj-kondo/clj-kondo/issues/1744) Expose `:imported-ns` in analysis of vars imported by potemkin
+- [#1746](https://github.com/clj-kondo/clj-kondo/issues/1746) Printing deps.edn error to stdout
+
+## 2022.06.22
+
+- [#1721](https://github.com/clj-kondo/clj-kondo/issues/1721): new `:discouraged-namespace` linter. See [docs](https://github.com/clj-kondo/clj-kondo/blob/master/doc/linters.md#discouraged-namespace).
+- [#1728](https://github.com/clj-kondo/clj-kondo/issues/1728) New macOS aarch64 (M1-compatible) binary
+- [#1726](https://github.com/clj-kondo/clj-kondo/issues/1726): fix invalid arity warning for `sequence` with `map` multi-arity transducer
+- [#1715](https://github.com/clj-kondo/clj-kondo/issues/1715): fix false positive warning for `recur` not in tail position with `core.async alt!!`
+- [#1714](https://github.com/clj-kondo/clj-kondo/issues/1714): fix recur arity for `defrecord`, `deftype` and `definterface`
+- [#1718](https://github.com/clj-kondo/clj-kondo/issues/1718): make unsorted namespaces linter case-insensitive
+- [#1722](https://github.com/clj-kondo/clj-kondo/issues/1722): suppress redundant do in `.cljc` for just one language
+
+## 2022.05.31
+
+- Ensure every node has a location when returning from `:macroexpand`
+
+## 2022.05.29
+
+- Support `:instance-invocations` analysis bucket
+- Copy `.clj_kondo` files from configs
+
+## 2022.05.28
+
+- Fix false positive redundant do's from `:macroexpand` hooks (regression in 2022.05.27)
+
+## 2022.05.27
+
+- [#686](https://github.com/clj-kondo/clj-kondo/issues/686): new `:warn-on-reflection` linter. See [docs](https://github.com/clj-kondo/clj-kondo/blob/master/doc/linters.md#warn-on-reflection).
+- [#1692](https://github.com/clj-kondo/clj-kondo/pull/1692): new linter `:redundant-call` - warns when a function or macro call with 1 given argument returns the argument. See [docs](https://github.com/clj-kondo/clj-kondo/blob/master/doc/linters.md#redundant-call).
+- All new JVM `clj-kondo.hooks-api` API ns for REPL usage. See
+  [docs](https://github.com/clj-kondo/clj-kondo/blob/master/doc/hooks.md#developing-hooks-in-the-repl).
+- [#1674](https://github.com/clj-kondo/clj-kondo/pull/1674): config options to limit analysis of var-usages and bodies of var-definitions. Can be used to get a quick overview of a project's namespaces and vars, without analyzing their details.
+- [#1676](https://github.com/clj-kondo/clj-kondo/pull/1674): Add support for custom function to be called for progress update, `:file-analyzed-fn`.
+- [#1697](https://github.com/clj-kondo/clj-kondo/issues/1697): update docs and messaging around importing configs ([@lread](https://github.com/lread))
+- [#1700](https://github.com/clj-kondo/clj-kondo/issues/1700): allow discouraged var on non-analyzed (closed source) vars
+- [#1703](https://github.com/clj-kondo/clj-kondo/issues/1703): update built-in cache with newest CLJ (1.11.1) and CLJS (1.11.54) versions
+- [#1704](https://github.com/clj-kondo/clj-kondo/issues/1704): fix re-frame analysis bug
+- [#1705](https://github.com/clj-kondo/clj-kondo/issues/1705): add pre-commit utility support via `.pre-commit-hooks.yaml`
+- [#1701](https://github.com/clj-kondo/clj-kondo/issues/1701): preserve locations in seqs and symbols in `:macroexpand` hook
+- [#1685](https://github.com/clj-kondo/clj-kondo/issues/1685): Support `.clj_kondo` hook extension
+- [#1670](https://github.com/clj-kondo/clj-kondo/issues/1670): parse error on auto-resolved keyword for current ns
+- [#1672](https://github.com/clj-kondo/clj-kondo/issues/1672): support `clojure.test/deftest-`
+- [#1678](https://github.com/clj-kondo/clj-kondo/issues/1678): support `with-precision`
+
+## 2022.04.25
+
+- [#1669](https://github.com/clj-kondo/clj-kondo/issues/1669): fix re-frame analysis problem causing file to be not parsed
+
+## 2022.04.23
+
+- [#1653](https://github.com/clj-kondo/clj-kondo/issues/1653): new linter `:keyword-binding` - warns when a keyword
+is used in a `:keys` binding vector. This linter is `:off` by default. See [docs](doc/linters.md#keyword-in-binding-vector).
+- [#996](https://github.com/clj-kondo/clj-kondo/issues/996): new linter `:discouraged-var`. See [docs](https://github.com/clj-kondo/clj-kondo/blob/master/doc/linters.md#discouraged-var).
+- [#1618](https://github.com/clj-kondo/clj-kondo/issues/1618): new `:config-in-ns` configuration option. See [docs](https://github.com/clj-kondo/clj-kondo/blob/master/doc/config.md#config-in-ns).
+- Support `:ns-groups` configuration option. See [docs](https://github.com/clj-kondo/clj-kondo/blob/master/doc/config.md#namespace-groups)
+- [#1657](https://github.com/clj-kondo/clj-kondo/issues/1657): support bindings with same name in `clojure.core.match`
+- [#1659](https://github.com/clj-kondo/clj-kondo/issues/1659): fix false positive unused import
+- [#1649](https://github.com/clj-kondo/clj-kondo/issues/1649): dot (`.`) should
+  be unresolved when not in fn position
+
+## 2022.04.08
+
+- [#1331](https://github.com/clj-kondo/clj-kondo/issues/1331): new linter `:non-arg-vec-return-type-hint` that warns when a return type hint is not placed on the arg vector (CLJ only). See [docs](https://github.com/clj-kondo/clj-kondo/blob/master/doc/linters.md#non-arg-vec-return-type-hint).
+- Enable `:namespace-name-mismatch` by default
+- [#1611](https://github.com/clj-kondo/clj-kondo/pull/1611): support `^:replace` override for nested config values
+- [#1625](https://github.com/clj-kondo/clj-kondo/issues/1625): Add option `--skip-lint`, to skip linting while still executing other tasks like copying configuration with `--copy-configs`.
+- [#1620](https://github.com/clj-kondo/clj-kondo/issues/1620): return type too narrow for `re-find`
+
+Analysis:
+
+- [#1623](https://github.com/clj-kondo/clj-kondo/issues/1623): Implement analysis for Java classes: `:java-class-definitions` and `:java-class-usages`. See [docs](https://github.com/clj-kondo/clj-kondo/blob/master/analysis/README.md).
+- [#1635](https://github.com/clj-kondo/clj-kondo/pull/1635): add `:end-row` and `end-col` to analyze data for `:namespace-definitions`
+- [#1651](https://github.com/clj-kondo/clj-kondo/issues/1651): Improvements for `:protocol-impls`
+- [#1612](https://github.com/clj-kondo/clj-kondo/issues/1612): Improve analysis for `deftype`
+- [#1613](https://github.com/clj-kondo/clj-kondo/issues/1613): Improve analysis for `reify`
+- [#1609](https://github.com/clj-kondo/clj-kondo/issues/1609): keyword analysis for `ns` + `require`
+
+## 2022.03.09
+
+- [#1607](https://github.com/clj-kondo/clj-kondo/issues/1607): disable `:namespace-name-mismatch` until further notice due to problems on Windows
+- [#1570](https://github.com/clj-kondo/clj-kondo/issues/1570): add `:defmethod true` to defmethod `var-usages` analysis.
+
+## 2022.03.08
+
+### New
+
+- [#1602](https://github.com/clj-kondo/clj-kondo/issues/1602): analysis data now includes `:protocol-ns` and `:protocol-name` on protocol methods ([@lread](https://github.com/lread))
+
+### Fixed
+
+- [#1605](https://github.com/clj-kondo/clj-kondo/issues/1605): error while determining namespace mismatch on Windows
+
+## 2022.03.04
+
+### New
+
+- [#1240](https://github.com/clj-kondo/clj-kondo/issues/1240): Add linter `:namespace-name-mismatch` to detect when namespace name does not match file name. ([@svdo](https://github.com/svdo))
+
+### Fixed
+
+- [#1598](https://github.com/clj-kondo/clj-kondo/issues/1598): `:scope-end-row` is missing on multi-arity fn args ([@mainej](https://github.com/mainej))
+- [#1588](https://github.com/clj-kondo/clj-kondo/issues/1588): analyze type hint in reified method
+- [#1581](https://github.com/clj-kondo/clj-kondo/issues/1581): redundant fn wrapper false positive when using pre-post-map
+- [#1582](https://github.com/clj-kondo/clj-kondo/issues/1582): False positive Insufficient input when using symbol call
+- [#1579](https://github.com/clj-kondo/clj-kondo/issues/1579): relax linting in tagged literal forms
+- [#1578](https://github.com/clj-kondo/clj-kondo/issues/1578): allow `:deprecated-var` config in ns form metadata
+- [#892](https://github.com/clj-kondo/clj-kondo/issues/892): suppress unresolved namespaces in data readers config
+- [#1594](https://github.com/clj-kondo/clj-kondo/issues/1594): lint clojure.test.check.properties/for-all as let
+
 ## 2022.02.09
 
 ### New

@@ -47,14 +47,25 @@ Also check out these resources:
 - [lein-githooks](https://github.com/gmorpheme/lein-githooks)
 - [Clojureverse pre-commit hook discussion](https://clojureverse.org/t/what-is-the-preferred-way-to-add-a-pre-commit-hook-to-re-frame-project/5305/4)
 
+### pre-commit framework
+
+`clj-kondo` is supported by the pre-commit framework for managing git commit hooks. To enable, add to your `.pre-commit-config.yaml`:
+
+```yaml
+- repo: https://github.com/clj-kondo/clj-kondo
+    rev: v2022.04.25
+    hooks:
+      - id: clj-kondo
+```
+
+Check out [pre-commit](https://pre-commit.com/) for additional resources.
+
 ## GitHub
 
 A number of [GitHub Actions](https://github.com/features/actions) that use `clj-kondo` are available:
 
-- [clojure-lint-action](https://github.com/marketplace/actions/clj-kondo-checks)
-- [lint-clojure](https://github.com/marketplace/actions/clj-kondo)
-- [Mega-Linter](https://github.com/marketplace/actions/mega-linter): 100% open-source linters aggregator
 - [setup-clj-kondo](https://github.com/marketplace/actions/setup-clj-kondo)
+- [clojure-lint-action](https://github.com/marketplace/actions/clj-kondo-checks)
 
 ### Linter Output Integration
 

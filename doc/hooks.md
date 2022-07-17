@@ -6,19 +6,20 @@ Hooks are a way to enhance linting via user provided code.
 
 Hooks are interpreted using the [Small Clojure Interpreter](https://github.com/borkdude/sci).
 
-Hooks receive Clojure code as rewrite-clj nodes, not only for performance reasons, but
-also because rewrite-clj nodes carry the line and row numbers for every Clojure element.
-Note that when we refer to a "rewrite-clj node", we are referring to clj-kondo's version of rewrite-clj node.
-Clj-kondo's version of [rewrite-clj](https://github.com/xsc/rewrite-clj) is catered to its use case,
+Hooks receive Clojure code as rewrite-clj nodes, not only for performance
+reasons, but also because rewrite-clj nodes carry the line and row numbers for
+every Clojure element.  Note that when we refer to a "rewrite-clj node", we are
+referring to clj-kondo's version of rewrite-clj node.  Clj-kondo's version of
+[rewrite-clj](https://github.com/xsc/rewrite-clj) is catered to its use case,
 includes some bug fixes, but most notably: strips away all whitespace.
 
 A hook can leverage the `clj-kondo.hooks-api` namespace for transformation and analysis of rewrite-clj nodes.
 
 API functions for producing nodes:
 
-- `list-node`: produce a new list node from a seqable nodes.
+- `list-node`: produce a new list node from a seqable of nodes.
 - `vector-node`: produce a new vector node from a seqable of nodes.
-<!-- - `map-node`: produce a new map node from a seqable of nodes-->
+- `map-node`: produce a new map node from a seqable of nodes
 - `keyword-node`: produce a new keyword. Use `(api/keyword-node :foo)` for a
   normal keyword and `(api/keyword-node :foo true)` to produce a node for
   `::foo`.
@@ -36,7 +37,7 @@ Other API functions:
 <!-- - `reg-keyword!`: indicates that a keyword's analysis should be mared as a definition. Expects the keyword node and either true or the fully-qualified call that registered it.-->
 - `reg-finding!`: registers a finding. Expects a map with:
   - `:message`: the lint message
-  - `:row` and `:col`: the location of the finding. These values can be derived from the metadata of a node.
+  - `:row`, `:col`, `:end-row` and `:end-col`: the location of the finding. These values can be derived from the metadata of a node.
   - `:type`: the type of lint warning. A level must be set for this type in the
     clj-kondo config under `:linters`. If the level is not set, the lint warning
     is ignored.
@@ -64,6 +65,45 @@ It receives Clojure macro (or function) call code as input in the form of a rewr
 
 - Transform the code to teach clj-kondo about its effect.
 - Inspect call arguments and emit findings about them.
+
+## Clojure code as rewrite-clj nodes
+
+If you develop a hook you will likely need some familiarity with rewrite-clj node structure.
+A couple of examples might help:
+
+`(my-macro 1 2 3)` becomes:
+
+- a list node with `:children`:
+  - token node `my-macro`
+  - token node `1`
+  - token node `2`
+  - token node `3`
+
+`(my-lib/with-bound [a 1 {:with-bound/setting true}] (inc a))` becomes:
+
+- a list node with `:children`
+  - token node `my-lib/with-bound`
+  - vector node with `:children`
+    - token-node `a`
+    - token-node `1`
+    - map node with `:children`
+      - keyword node `:with-bound/setting`
+      - token node `true`
+  - list node
+    - token node `inc`
+    - token node `a`
+
+Clj-kondo uses a different approach to metadata than the original rewrite-clj
+library. Metadata nodes are stored in the `:meta` key on nodes correponding to
+the values carrying the metadata:
+
+`^:foo ^:bar []` becomes:
+
+- a vector node with `:meta`
+  - a seq of nodes with:
+    - keyword node `:foo`
+    - keyword node `:bar`
+
 
 ### Transformation
 
@@ -155,6 +195,11 @@ bindings and will give warnings customized to this macro.
 Analyze-call hooks can also be used to create custom lint warnings, without
 transforming the original rewrite-clj node.
 
+This is done either by simply throwing an error within the hook, or instead 
+calling `reg-finding!`. They are similar, but the latter allows for defining 
+precise details, including naming the linter type and defining the range to
+report the diagnostics for (eg where to render "squigglies").
+
 This is an example for re-frame's `dispatch` function which checks if the
 dispatched event used a qualified keyword.
 
@@ -169,11 +214,9 @@ dispatched event used a qualified keyword.
     (when (and (vector? event)
                (keyword? kw)
                (not (qualified-keyword? kw)))
-      (let [{:keys [:row :col]} (some-> node :children second :children first meta)]
-        (api/reg-finding! {:message "keyword should be fully qualified!"
-                           :type :re-frame/keyword
-                           :row row
-                           :col col})))))
+      (let [m (some-> node :children second :children first meta)]
+        (api/reg-finding! (assoc m :message "keyword should be fully qualified!"
+                                 :type :re-frame/keyword))))))
 ```
 
 The hook uses the `api/sexpr` function to convert the rewrite-clj node into a
@@ -201,62 +244,20 @@ The configuration is supplied as a key in the hook argument:
   (:require [clj-kondo.hooks-api :as api]))
 
 (defn warn? [linter-params]
- ...)
+  ...)
 
 (defn bar [{:keys [:node :config]}]
   (let [linter-params (-> config :linters :foo/lint-bar :lint)]
     (when (warn? linter-params)
-      (let [{:keys [:row :col]} (meta node)]
-        (api/reg-finding! {:message "warning message!"
-                           :type :re-frame/keyword
-                           :row row
-                           :col col})))))
+      (api/reg-finding! (assoc (meta node)
+                               :message "warning message!"
+                               :type :re-frame/keyword)))))
 ```
 
-
-Additionally, the finding has `:row` and `:col`,
-derived from the node's metadata to show the finding at the appropriate
-location.
+Additionally, the finding has `:row`, `:col`, `:end-row` and `:end-col`, derived
+from the node's metadata to show the finding at the appropriate location.
 
 <img src="../screenshots/re-frame-hook.png"/>
-
-## Clojure code as rewrite-clj nodes
-
-If you develop a hook you will likely need some familiarity with rewrite-clj node structure.
-A couple of examples might help:
-
-`(my-macro 1 2 3)` becomes:
-
-- a list node with `:children`:
-  - token node `my-macro`
-  - token node `1`
-  - token node `2`
-  - token node `3`
-
-`(my-lib/with-bound [a 1 {:with-bound/setting true}] (inc a))` becomes:
-
-- a list node with `:children`
-  - token node `my-lib/with-bound`
-  - vector node with `:children`
-    - token-node `a`
-    - token-node `1`
-    - map node with `:children`
-      - keyword node `:with-bound/setting`
-      - token node `true`
-  - list node
-    - token node `inc`
-    - token node `a`
-
-Clj-kondo uses a different approach to metadata than the original rewrite-clj
-library. Metadata nodes are stored in the `:meta` key on nodes correponding to
-the values carrying the metadata:
-
-`^:foo ^:bar []` becomes:
-
-- a vector node with `:meta`
-  - a seq of nodes with:
-    - keyword node `:foo`
-    - keyword node `:bar`
 
 ## Macroexpand
 
@@ -264,8 +265,8 @@ The `:macroexpand` hook can be used to expand the s-expression representation of
 the rewrite-clj nodes using a macro in the configuration. After macroexpansion,
 clj-kondo coerces the s-expression back into rewrite-clj nodes. That makes this
 feature easier to use than `:analyze-call`, but comes at the cost of loss of
-precision with respect to locations: all lint warnings will be reported at the
-call site of the macro. Similar rules to `:analyze-hook` apply to this feature:
+precision with respect to locations: some lint warnings will be reported at a
+parent node location. Similar rules to `:analyze-hook` apply to this feature:
 the macro in the config doesn't have to be the same as the original macro, as
 long as it expands in syntactically sane expressions. The config macros, like
 `:analyze-call` hooks, are running in SCI and have a subset of Clojure
@@ -315,7 +316,8 @@ This should get rid of the unresolved symbols.
 ### Subtleties of `:macroexpand`
 
 There are several special cases to watch out for when using the `:macroexpand` feature.
-  - It is recommended to put your macroexpansion code into a file / namespace
+
+- It is recommended to put your macroexpansion code into a file / namespace
   with the same name as the original macro.  E.g., if your macro `foo` is
   defined in a namespace named `bar` then the `(defmacro foo ...)` must sit in
   the file `.clj-kondo/bar.clj`.  Furthermore, if the namespace is `my-app.bar`,
@@ -340,8 +342,112 @@ Here are some tips and tricks for developing hooks.
 ### Debugging
 
 For debugging the output of a hook function, you can use `println` or `prn`. To
-get a sense of what a newly generated node looks like, you can use `(prn
-(api/sexpr node))`.
+get a sense of what a newly generated node looks like, you can use `(prn (api/sexpr node))`.
+
+### Developing hooks in the REPL
+
+For developing hooks in a JVM REPL, clj-kondo exposes the `clj-kondo.hooks-api`
+namespace:
+
+``` Clojure
+$ clj
+Clojure 1.11.0
+user=> (require '[clj-kondo.hooks-api :as api])
+nil
+user=> (defn my-hook [{:keys [node]}] {:node (api/list-node (list* (rest (:children node))))})
+#'user/my-hook
+```
+
+The JVM namespace exposes additional functions for development:
+
+- `parse-string`: parses an s-expression to a node
+
+``` Clojure
+user=> (def node (api/parse-string "(+ 1 2 3)"))
+#'user/node
+user=> (str (:node (my-hook {:node node})))
+"(1 2 3)"
+```
+
+To load hook code that is in a `.clj-kondo` directory, not on the classpath, you
+can use `load-file` and then test the hook function. Suppose there is a file
+`.clj-kondo/hooks/one_of.clj`:
+
+``` Clojure
+(ns hooks.one-of
+  (:require [clj-kondo.hooks-api :as api]))
+
+(defn one-of [{:keys [node]}]
+  (let [[matchee matches] (rest (:children node))
+        new-node (api/list-node
+                  [(api/token-node 'case)
+                   matchee
+                   (with-meta (api/list-node (:children matches))
+                     (meta matches))
+                   matchee])]
+    {:node new-node}))
+
+```
+
+Load this file in the JVM repl:
+
+``` Clojure
+user=> (load-file ".clj-kondo/hooks/one_of.clj")
+#'hooks.one-of/one-of
+```
+
+and then call the hook function:
+
+``` Clojure
+user=> (hooks.one-of/one-of {:node (api/parse-string "(one-of x [1 2 3])")})
+{:node <list: (case x (1 2 3) x)>}
+```
+
+To run clj-kondo on the hook code, use the `clj-kondo.core` namespace:
+
+``` Clojure
+user=> (require '[clj-kondo.core :as clj-kondo])
+nil
+user=> (def code "(require '[clj-kondo.impl.utils :as u]) (u/one-of 1 [1 2 3])")
+nil
+user=> (:findings (with-in-str code (clj-kondo/run! {:lint ["-"]})))
+[]
+```
+
+When clj-kondo runs hooks, they are executed in a SCI context. Once a hook
+namespace is loaded in the SCI context, it will not be reloaded, for performance
+reasons. To facilitate reloading, the JVM hooks API exposes the dynamic var
+`*reload*` which can be set to `true`:
+
+``` Clojure
+user=> (binding [api/*reload* true]
+         (:findings (with-in-str code (clj-kondo/run! {:lint ["-"]}))))
+[]
+```
+
+The dynamic var should not be set to `true` in production usage.
+
+For `:macroexpand` hooks, the JVM api offers the `api/macroexpand` function. Suppose we have a file `.clj-kondo/hooks/one_of.clj` with a macro:
+
+``` Clojure
+(ns hooks.one-of
+  (:require [clj-kondo.hooks-api :as api]))
+
+(defmacro one-of [elt coll]
+  `(case ~elt ~(seq coll) ~elt nil))
+```
+
+You can call `api/macroexpand` like this:
+
+``` Clojure
+user=> (str (api/macroexpand #'hooks.one-of/one-of* (api/parse-string "(one-of 1 [1 2 3])") {}))
+"(clojure.core/case 1 (1 2 3) 1 nil)"
+```
+
+So, provide the macro _var_` as the first argument, a node as the second
+argument and bindings (local variables in scope of the macro call) as the third
+argument. The return value from the macro call is a node that has been
+reconstructed from the s-expression that the macro returned.
 
 ### Performance
 
@@ -354,6 +460,136 @@ To test performance of a hook, you can write code which triggers the hook and
 repeat that expression `n` times (where `n` is a large number like
 1000000). Then lint the file with `clj-kondo --lint` and measure
 timing. The `time` macro is also available within hooks code.
+
+
+### Refreshing with tools.namespace
+
+Note: the following refers to `v2022.04.25` and earlier. Newer versions support
+the `.clj_kondo` extension for hooks which won't cause any confusion with tools
+that try to load `.clj` files.
+
+Out of the box, `tools.namespace/refresh(-all)` will attempt to reload all
+namespaces that are in Clojure source files (`.clj` etc.) in _directories_ (i.e.
+not jars) on the classpath. As clj-kondo allows defining hooks in `.clj` files,
+these will be attempted to be also loaded. This can be problematic as a) these
+hooks are normally not intended to be loaded in the project, only in the
+clj-kondo process b) they are normally placed in a location different to where
+Clojure would expect them based on their namespace name.
+
+Example:
+
+```shell
+clj -Srepro -Sdeps \
+ '{:deps {org.clojure/tools.namespace {:mvn/version "1.2.0"} seancorfield/next.jdbc {:git/url "https://github.com/seancorfield/next-jdbc/" :git/sha "24bf1dbaa441d62461f980e9f880df5013f295dd"}}}' \
+ -M -e "((requiring-resolve 'clojure.tools.namespace.repl/refresh-all))"
+```
+
+The above will result in a loading error although the configuration loaded from
+the referenced lib is valid according to clj-kondo.
+
+```
+Could not locate
+  hooks/com/github/seancorfield/next_jdbc__init.class,
+  hooks/com/github/seancorfield/next_jdbc.clj or
+  hooks/com/github/seancorfield/next_jdbc.cljc on classpath.
+Please check that namespaces with dashes use underscores in the Clojure file name.
+```
+
+There is an
+existing [ask.clojure question](https://ask.clojure.org/index.php/11434/could-namespace-refresh-sophisticated-directory-filtering)
+about this.
+
+A workaround is to explicitly set the directories `tools.namespace` will search
+for Clojure namespaces using `clojure.tools.namespace.repl/set-refresh-dirs`.
+
+To try and still be as broad as possible with the search (as is the default),
+the following could be an option:
+
+```clojure
+(defn remove-clj-kondo-exports-from-tools-ns-refresh-dirs
+  "A potential issue from using this is that if the directory containing the clj-kondo.exports folder
+  also directly contains to-be-reloaded clojure source files, those will no longer be reloaded."
+  []
+  (->> (clojure.java.classpath/classpath-directories)
+       (mapcat
+        (fn [^File classpath-directory]
+          (let [children   (.listFiles classpath-directory)
+                directory? #(.isDirectory ^File %)
+                clj-kondo-exports?
+                           #(= "clj-kondo.exports" (.getName ^File %))
+                has-clj-kondo-exports
+                           (some (every-pred clj-kondo-exports? directory?) children)]
+            (if has-clj-kondo-exports
+              (->> children
+                   (filter directory?)
+                   (remove clj-kondo-exports?))
+              [classpath-directory]))))
+       (apply clojure.tools.namespace.repl/set-refresh-dirs)))
+
+;; call in user.clj
+(remove-clj-kondo-exports-from-tools-ns-refresh-dirs)
+```
+
+### Compatibility with tools.build compilation
+
+Note: the following refers to `v2022.04.25` and earlier. Newer versions support
+the `.clj_kondo` extension for hooks which won't cause any confusion with tools
+that try to load `.clj` files.
+
+Similar to the previous point about `tools.namespace`, compiling a project that
+has hooks defined in `.clj` files on its classpath with `tools.build` might run
+into issues if one wants to let `tools.build` find as many namespaces to
+compile as possible (by setting `:src-dirs (:classpath-roots basis)`). See
+some discussion about this
+in [this Clojurians thread](https://clojurians.slack.com/archives/C02B5GHQWP4/p1651685386479149).
+
+```shell
+cat <<EOF > deps.edn
+{:deps {seancorfield/next.jdbc
+        {:git/url "https://github.com/seancorfield/next-jdbc/"
+         :git/sha "24bf1dbaa441d62461f980e9f880df5013f295dd"}}
+ :aliases
+ {:build
+  {:paths []
+   :deps
+   {io.github.clojure/tools.build {:git/tag "v0.8.2" :git/sha "ba1a2bf"}}}}}
+EOF
+
+clj -Srepro -M:build -e \
+ "(let [basis ((requiring-resolve 'clojure.tools.build.api/create-basis))] ((requiring-resolve 'clojure.tools.build.api/compile-clj) {:basis basis :src-dirs (:classpath-roots basis) :class-dir \"classes\"}))"
+```
+
+Results in:
+
+```
+Execution error (FileNotFoundException) at user/eval136$fn (compile.clj:17).
+Could not locate hooks/com/github/seancorfield/next_jdbc__init.class,
+hooks/com/github/seancorfield/next_jdbc.clj or
+hooks/com/github/seancorfield/next_jdbc.cljc on classpath.
+Please check that namespaces with dashes use underscores in the Clojure file name.
+```
+
+A workaround is to copy and tweak namespace discovery from `tools.build`:
+
+```clojure
+(require
+ '[clojure.tools.build.api :as b]
+ '[clojure.tools.build.tasks.compile-clj :as compile-clj])
+
+(defn with-safe-ns-compile
+  "Attempts to obtain a collection of namespaces that are safe to call
+  (compile) on and associates it under :ns-compile"
+  [{:keys [basis sort] :or {sort :topo} :as compile-clj-opts}]
+  (let [clj-paths (mapv b/resolve-path (:classpath-roots basis))]
+    (->> (case sort
+           :topo (#'compile-clj/nses-in-topo clj-paths)
+           :bfs (#'compile-clj/nses-in-bfs clj-paths)
+           (throw (ex-info "Invalid :sort in compile-clj task" {:sort sort})))
+
+         ;; Adjust pred to your own needs
+         (filterv #(re-find #"^(my-namespace-prefix|other-safe-prefix)\." (name %)))
+         (assoc compile-clj-opts :ns-compile))))
+```
 
 ## Refer to exported config within project
 

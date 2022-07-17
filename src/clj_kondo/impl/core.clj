@@ -3,13 +3,14 @@
   {:no-doc true}
   (:require
    [babashka.fs :as fs]
+   [clj-kondo.impl.analysis.java :as java]
    [clj-kondo.impl.analyzer :as ana]
    [clj-kondo.impl.config :as config]
    [clj-kondo.impl.findings :as findings]
-   [clj-kondo.impl.utils :as utils :refer [one-of print-err! map-vals assoc-some]]
+   [clj-kondo.impl.utils :as utils :refer [one-of print-err! map-vals assoc-some
+                                           ->uri]]
    [clojure.edn :as edn]
    [clojure.java.io :as io]
-   [clojure.set :as set]
    [clojure.string :as str])
   (:import [java.util.jar JarFile JarFile$JarFileEntry]))
 
@@ -25,16 +26,23 @@
 
 (defn format-output [config]
   (if-let [^String pattern (-> config :output :pattern)]
-    (fn [filename row col level message]
+    (fn [{:keys [:filename :row :col :level :message :type] :as _finding}]
       (-> pattern
           (str/replace "{{filename}}" filename)
           (str/replace "{{row}}" (str row))
           (str/replace "{{col}}" (str col))
           (str/replace "{{level}}" (name level))
           (str/replace "{{LEVEL}}" (str/upper-case (name level)))
-          (str/replace "{{message}}" message)))
-    (fn [filename row col level message]
-      (str filename ":" row ":" col ": " (name level) ": " message))))
+          (str/replace "{{message}}" message)
+          (str/replace "{{type}}" (str type))))
+    (fn [{:keys [:filename :row :col :level :message :type] :as _finding}]
+      (str filename ":"
+           row ":"
+           col ": "
+           (name level) ": "
+           message
+           (when (-> config :output :show-rule-name-in-message)
+             (str " [" type "]"))))))
 
 ;;;; process config
 
@@ -174,7 +182,10 @@
 
 (defn source-file? [filename]
   (when-let [[_ ext] (re-find #"\.(\w+)$" filename)]
-    (one-of (keyword ext) [:clj :cljs :cljc :edn])))
+    (one-of (keyword ext) [:clj :cljs :cljc :edn
+                           ;; we needed to add this so .clj_kondo files will be
+                           ;; copied from imported configs!
+                           :clj_kondo])))
 
 (defn config-dir
   ([] (config-dir
@@ -218,7 +229,17 @@
           entries (enumeration-seq (.entries jar))
           entries (filter (fn [^JarFile$JarFileEntry x]
                             (let [nm (.getName x)]
-                              (and (not (.isDirectory x)) (source-file? nm)))) entries)]
+                              (when-not (.isDirectory x)
+                                (when (or (str/ends-with? nm ".class")
+                                          (str/ends-with? nm ".java"))
+                                  (when (and (java/analyze-class-defs? ctx)
+                                             (not (str/includes? nm "$"))
+                                             (not (str/ends-with? nm "__init.class")))
+                                    (java/reg-class-def! ctx {:jar (if canonical?
+                                                                     (str (.getCanonicalPath jar-file))
+                                                                     (str jar-file))
+                                                              :entry nm})))
+                                (source-file? nm)))) entries)]
       ;; Important that we close the `JarFile` so this has to be strict see GH
       ;; issue #542. Maybe it makes sense to refactor loading source using
       ;; transducers so we don't have to load the entire source of a jar file in
@@ -232,7 +253,8 @@
                            (when (:copy-configs ctx)
                              ;; only copy when copy-configs is true
                              (copy-config-entry ctx entry-name source cfg-dir))
-                           {:filename (str (when canonical?
+                           {:uri (->uri (str (.getCanonicalPath jar-file)) entry-name nil)
+                            :filename (str (when canonical?
                                              (str (.getCanonicalPath jar-file) ":"))
                                            entry-name)
                             :source source
@@ -281,7 +303,13 @@
                            (.getCanonicalPath file)
                            (.getPath file))
                       can-read? (.canRead file)
-                      source? (and (.isFile file) (source-file? nm))]
+                      is-file? (.isFile file)
+                      _ (when (and is-file?
+                                   (java/analyze-class-defs? ctx)
+                                   (or (str/ends-with? nm ".class")
+                                       (str/ends-with? nm ".java")))
+                          (java/reg-class-def! ctx {:file nm}))
+                      source? (and is-file? (source-file? nm))]
                   (if (and cfg-dir source?
                            (str/includes? path "clj-kondo.exports"))
                     ;; never lint exported hook code, when coming from dir.
@@ -291,7 +319,8 @@
                       (copy-config-file ctx file cfg-dir))
                     (cond
                       (and can-read? source?)
-                      {:filename nm
+                      {:uri (->uri nil nil nm)
+                       :filename nm
                        :source (slurp file)
                        :group-id dir}
                       (and (not can-read?) source?)
@@ -301,17 +330,17 @@
 
 ;;;; threadpool
 
-(defn lint-task [ctx ^java.util.concurrent.LinkedBlockingDeque deque dev?]
+(defn analyze-task [ctx ^java.util.concurrent.LinkedBlockingDeque deque dev?]
   (loop []
     (when-let [group (.pollFirst deque)]
       (try
-        (doseq [{:keys [:filename :source :lang]} group]
-          (ana/analyze-input ctx filename source lang dev?))
+        (doseq [{:keys [:filename :source :lang :uri]} group]
+          (ana/analyze-input ctx filename uri source lang dev?))
         (catch Exception e (binding [*out* *err*]
                              (prn e))))
       (recur))))
 
-(defn parallel-lint [ctx sources dev?]
+(defn parallel-analyze [ctx sources dev?]
   (let [source-groups (group-by :group-id sources)
         source-groups (filter seq (vals source-groups))
         deque     (java.util.concurrent.LinkedBlockingDeque. ^java.util.List source-groups)
@@ -322,7 +351,7 @@
     (dotimes [_ cnt]
       (.execute es
                 (bound-fn []
-                  (lint-task ctx deque dev?)
+                  (analyze-task ctx deque dev?)
                   (.countDown latch))))
     (.await latch)
     (.shutdown es)))
@@ -341,11 +370,60 @@
 (defn classpath? [f]
   (str/includes? f path-separator))
 
-(defn schedule [ctx {:keys [:filename :source :lang] :as m} dev?]
-  (swap! (:files ctx) inc)
+(defn ^:private analyzable-filename? [filename ctx]
+  (let [cfg-dir (:config-dir ctx)]
+    (and (source-file? filename)
+         (not (and cfg-dir
+                   (str/includes? filename "clj-kondo.exports"))))))
+
+(defn ^:private entries-from-jar-count [^java.io.File jar-file ctx]
+  (with-open [jar (JarFile. jar-file)]
+    (->> (.entries jar)
+         enumeration-seq
+         (filter (fn [^JarFile$JarFileEntry entry]
+                   (let [entry-name (.getName entry)]
+                     (and (not (.isDirectory entry))
+                          (analyzable-filename? entry-name ctx)))))
+         count)))
+
+(defn ^:private files-count [paths ctx]
+  (->> paths
+       (map (fn [path]
+              (let [path (str path)
+                    file (io/file path)
+                    file-path (when (.exists file)
+                                (.getCanonicalPath file))]
+                (cond
+                  (and file-path
+                       (str/ends-with? file-path ".jar"))
+                  (entries-from-jar-count file ctx)
+
+                  (and file-path
+                       (.isFile file))
+                  1
+
+                  file-path
+                  (->> (file-seq file)
+                       (filter (fn [^java.io.File f]
+                                 (and (.canRead f)
+                                      (.isFile f)
+                                      (analyzable-filename? (.getCanonicalPath f) ctx))))
+                       count)
+
+                  (= "-" path)
+                  1
+
+                  (classpath? path)
+                  (files-count (str/split path (re-pattern path-separator)) ctx)
+
+                  :else 0))))
+       (reduce + 0)))
+
+(defn schedule [ctx {:keys [:filename :source :lang :uri] :as m} dev?]
   (if (:parallel ctx)
     (swap! (:sources ctx) conj m)
-    (ana/analyze-input ctx filename source lang dev?)))
+    (when (or (:analysis ctx) (not (:skip-lint ctx)))
+      (ana/analyze-input ctx filename uri source lang dev?))))
 
 (defn process-file [ctx path default-language canonical? filename]
   (let [seen-files (:seen-files ctx)]
@@ -362,7 +440,7 @@
           canonical ;; implies the file exiss
           (if (.isFile file)
             (when-not (seen? canonical seen-files debug)
-              (if (str/ends-with? (.getPath file) ".jar")
+              (if (str/ends-with? canonical ".jar")
                 ;; process jar file
                 (let [jar-name (.getName file)
                       config-hash (force (:config-hash ctx))
@@ -379,12 +457,16 @@
                               (sources-from-jar ctx file canonical?))
                         (swap! (:mark-linted ctx) conj [skip-mark path]))))
                 ;; assume normal source file
-                (schedule ctx {:filename (if canonical?
-                                           canonical
-                                           path)
-                               :source (slurp file)
-                               :lang (lang-from-file path default-language)}
-                          dev?)))
+                (let [fn (if canonical?
+                           canonical
+                           path)]
+                  (if (str/ends-with? canonical ".java")
+                    (java/reg-class-def! ctx {:file canonical})
+                    (schedule ctx {:filename fn
+                                   :uri (->uri nil nil fn)
+                                   :source (slurp file)
+                                   :lang (lang-from-file path default-language)}
+                              dev?)))))
             ;; assume directory
             (run! #(schedule ctx (assoc % :lang (lang-from-file (:filename %) default-language)) dev?)
                   (sources-from-dir ctx file canonical?)))
@@ -399,73 +481,73 @@
                 (str/split path
                            (re-pattern path-separator)))
           :else
-          (findings/reg-finding! ctx
-                                 {:filename (if canonical?
-                                              ;; canonical path on weird file
-                                              ;; crashes on Windows
-                                              (try (.getCanonicalPath file)
-                                                   (catch Exception _ path))
-                                              path)
-                                  :type :file
-                                  :col 0
-                                  :row 0
-                                  :message "file does not exist"})))
+          (when-not (:skip-lint ctx)
+            (findings/reg-finding! ctx
+                                   {:filename (if canonical?
+                                                ;; canonical path on weird file
+                                                ;; crashes on Windows
+                                                (try (.getCanonicalPath file)
+                                                     (catch Exception _ path))
+                                                path)
+                                    :type :file
+                                    :col 0
+                                    :row 0
+                                    :message "file does not exist"}))))
       (catch Throwable e
         (if dev?
           (throw e)
-          (findings/reg-finding! ctx {:filename (if canonical?
-                                                  (.getCanonicalPath (io/file path))
-                                                  path)
-                                      :type :file
-                                      :col 0
-                                      :row 0
-                                      :message "Could not process file."}))))))
+          (when-not (:skip-lint ctx)
+            (findings/reg-finding! ctx {:filename (if canonical?
+                                                    (.getCanonicalPath (io/file path))
+                                                    path)
+                                        :type :file
+                                        :col 0
+                                        :row 0
+                                        :message "Could not process file."})))))))
 
-(defn inactive-config-imports [ctx]
+(defn copied-config-paths [ctx]
   (when-let [cfg-dir (io/file (:config-dir ctx))]
-    (when-let [new-configs (-> (set/difference (->> ctx
-                                                    :detected-configs
-                                                    deref
-                                                    (map utils/unixify-path)
-                                                    set)
-                                               (->> ctx
-                                                    :config
-                                                    :config-paths
-                                                    (map utils/unixify-path)
-                                                    set))
-                               vec
-                               sort
-                               seq)]
-      (let [rel-cfg-dir (str (if (.isAbsolute cfg-dir)
-                               (.relativize (.normalize (.toPath (.getAbsoluteFile (io/file "."))))
-                                            (.normalize (.toPath cfg-dir)))
-                               cfg-dir))]
-        (for [new-config new-configs]
-          {:imported-config (-> (io/file rel-cfg-dir new-config) str utils/unixify-path)
-           :suggested-config-path (str \" new-config \")
-           :config-file (-> (io/file rel-cfg-dir "config.edn") str utils/unixify-path)})))))
+    (let [rel-cfg-dir (str (if (.isAbsolute cfg-dir)
+                             (.relativize (.normalize (.toPath (.getAbsoluteFile (io/file "."))))
+                                          (.normalize (.toPath cfg-dir)))
+                             cfg-dir))]
+      (->> ctx
+           :detected-configs
+           deref
+           (map #(->> % (io/file rel-cfg-dir) str utils/unixify-path))
+           sort
+           distinct
+           seq))))
 
-(defn print-inactive-config-imports [inactives]
+(defn print-copied-configs [imports]
   (binding [*out* *err*]
-    (doseq [{:keys [imported-config suggested-config-path config-file]} inactives]
-      (println (format "Imported config to %s. To activate, add %s to :config-paths in %s."
-                       imported-config suggested-config-path config-file)))))
+    (if (seq imports)
+      (do
+        (println "Configs copied:")
+        (doseq [i imports]
+          (println (str "- " i))))
+      (println "No configs copied."))))
 
 (defn process-files [ctx files default-lang filename]
   (let [ctx (assoc ctx :seen-files (atom #{}))
         cache-dir (:cache-dir ctx)
         ctx (assoc ctx :detected-configs (atom [])
-                   :mark-linted (atom []))
+                   :mark-linted (atom [])
+                   :total-files (when (:file-analyzed-fn ctx)
+                                  (files-count files ctx)))
         canonical? (-> ctx :config :output :canonical-paths)]
     (run! #(process-file ctx % default-lang canonical? filename) files)
-    (when (:parallel ctx)
-      (parallel-lint ctx @(:sources ctx) dev?))
+    (when (and (:parallel ctx)
+               (or (:analysis ctx)
+                   (not (:skip-lint ctx))))
+      (parallel-analyze ctx @(:sources ctx) dev?))
     (when (and cache-dir (:dependencies ctx))
       (doseq [[mark path] @(:mark-linted ctx)]
         (let [skip-file (io/file cache-dir "skip" mark)]
           (io/make-parents skip-file)
           (spit skip-file path))))
-    (print-inactive-config-imports (inactive-config-imports ctx))))
+    (when (:copy-configs ctx)
+      (print-copied-configs (copied-config-paths ctx)))))
 
 ;;;; index defs and calls by language and namespace
 
@@ -534,7 +616,14 @@
   (let [print-debug? (:debug config)
         filter-output (not-empty (-> config :output :include-files))
         remove-output (not-empty (-> config :output :exclude-files))]
-    (for [f findings
+    (for [[[_filename _row _col type cljc] findings] findings
+          :when (or (not cljc)
+                    ;; given that it's cljc, the finding should not be of redundant-do
+                    (not= :redundant-do type)
+                    ;; given that it's redundant-do, it should have two
+                    ;; findings in the same spot
+                    (> (count findings) 1))
+          f findings
           :let [filename (:filename f)
                 tp (:type f)
                 level (:level f)]
@@ -563,5 +652,4 @@
 
 ;;;; Scratch
 
-(comment
-  )
+(comment)

@@ -99,11 +99,19 @@
   (is (empty? (lint! "#(do :foo :bar)"
                      {:linters {:redundant-expression {:level :off}}})))
   (is (empty? (lint! "#(do (prn %1 %2 true) %1)")))
-  (is (empty? (lint! "(let [x (do (println 1) 1)] x)"))))
+  (is (empty? (lint! "(let [x (do (println 1) 1)] x)")))
+  (is (empty? (lint! "(let [_ nil]
+  #?(:cljs
+     (do
+       (println 1)
+       (println 2))
+     :clj (println 3)))
+"
+                     "--lang" "cljc"))))
 
 (deftest cljc-test
   (assert-submaps
-   '({:file "corpus/cljc/datascript.cljc", :row 8, :col 1}
+   '({:file "corpus/cljc/datascript.cljc", :row 9, :col 1}
      {:file "corpus/cljc/test_cljc.cljc", :row 13, :col 9}
      {:file "corpus/cljc/test_cljc.cljc", :row 14, :col 10}
      {:file "corpus/cljc/test_cljc.cljc", :row 21, :col 1}
@@ -1223,7 +1231,29 @@ foo/foo ;; this does use the private var
   (is (empty? (lint! "#(recur)")))
   (is (empty? (lint! "(ns foo (:require [clojure.core.async :refer [thread]])) (thread (recur))")))
   (is (empty? (lint! "(ns clojure.core.async) (defmacro thread [& body]) (thread (when true (recur)))")))
-  (is (empty? (lint! "(fn* ^:static cons [x seq] (recur 1 2))"))))
+  (is (empty? (lint! "(fn* ^:static cons [x seq] (recur 1 2))")))
+  (is (empty? (lint! "
+(defprotocol IFoo (-foo [_]))
+(defrecord Foo [] IFoo (-foo [_]
+                         (let [_f (fn [x] (recur x))]
+                           (recur))))
+(deftype FooType [] java.lang.Runnable (run [_]
+                                         (let [_f (fn [x] (recur x))]
+                                           (recur))))
+(reify IFoo (-foo [_] (let [_f (fn [x] (recur x))]
+                       (loop [x 1] (recur x))
+                       (recur))))
+(extend-protocol
+    IFoo
+  Number
+  (-foo [this]
+    (recur this)))
+
+(extend-type
+    Number
+  IFoo
+  (-foo [this]
+    (recur this)))"))))
 
 (deftest lint-as-test
   (assert-submaps
@@ -1650,6 +1680,25 @@ foo/foo ;; this does use the private var
           parsed (cheshire/parse-string output true)]
       (is (map? parsed)))))
 
+(deftest show-rule-name-in-message-output-test
+  (letfn [(run-main [config]
+            (->> (main "--cache" "false" "--lint" "-" "--config" config)
+                 (with-out-str)
+                 (with-in-str "(inc)(dec)")
+                 (str/split-lines)
+                 ;; dropping the 'linting took' line
+                 (drop-last)))]
+    (testing "with :show-rule-name-in-message true"
+      (doseq [output-line (run-main "{:output {:show-rule-name-in-message true}}")
+              :let [[_ begin] (re-matches #".*(<stdin>:\d+:\d+).*" output-line)]]
+        (testing (str "output line '" begin "' ")
+          (is (str/ends-with? output-line "[:invalid-arity]") "has rule name"))))
+    (testing "with :show-rule-name-in-message false"
+      (doseq [output-line (run-main "{:output {:show-rule-name-in-message false}}")
+              :let [[_ begin] (re-matches  #".*(<stdin>:\d+:\d+).*" output-line)]]
+        (testing (str "output line '" begin "' ")
+          (is (not (str/ends-with? output-line "[:invalid-arity]")) "doesn't have rule name"))))))
+
 (deftest defprotocol-test
   (assert-submaps
    '({:file "corpus/defprotocol.clj",
@@ -1693,7 +1742,7 @@ foo/foo ;; this does use the private var
    '({:file "corpus/deftype.cljs", :row 9, :col 10, :level :warning, :message "unused binding coll"}
      {:file "corpus/deftype.cljs", :row 17, :col 16, :level :warning, :message "unused binding coll"})
    (lint! (io/file "corpus" "deftype.cljs")
-              "--config" "{:linters {:unused-binding {:level :warning}}}")))
+          "--config" "{:linters {:unused-binding {:level :warning}}}")))
 
 (deftest defmulti-test
   (assert-submaps
@@ -1819,8 +1868,13 @@ foo/foo ;; this does use the private var
                      {:linters {:unresolved-symbol {:level :error}}})))
   (is (empty? (lint! "
 (exists? foo.bar/baz)"
-                     {:linters {:unresolved-namespace {:level :error}}}
-                     "--lang" "cljs"))))
+                     {:linters {:unresolved-symbol {:level :error}
+                                :unresolved-namespace {:level :error}}}
+                     "--lang" "cljs")))
+  (is (empty? (lint! "(def ^{:macro true} foo (fn* [_ _] (map (fn* []) [])))")))
+  (is (empty? (lint! "::f._al")))
+  (is (empty? (lint! "(with-precision 6 :rounding CEILING (+ 3.5555555M 1))"
+                     {:linters {:unresolved-symbol {:level :error}}}))))
 
 (deftest tagged-literal-test
   (is (empty?
@@ -1831,7 +1885,19 @@ foo/foo ;; this does use the private var
        (lint! "(set! *default-data-reader-fn* tagged-literal)
                #read-thing ([1 2 3] 4 5 6 (inc :foo))"
               )))
-  )
+  (is (empty?
+       (lint! "(let [foo \"2022-02-10\"
+                    bar #time/date foo]
+                bar)"
+              {:linters {:unused-binding {:level :warning}}}))))
+
+(deftest data-readers-config-test
+  (is (empty? (lint! (io/file "corpus/data_readers.clj")
+                     {:linters {:unresolved-symbol {:level :error}
+                                :unresolved-namespace {:level :error}}})))
+  (is (empty? (lint! (io/file "corpus/data_readers.cljc")
+                     {:linters {:unresolved-symbol {:level :error}
+                                :unresolved-namespace {:level :error}}}))))
 
 (deftest extend-type-specify-test
   (assert-submaps
@@ -1936,10 +2002,10 @@ foo/foo ;; this does use the private var
      :level   :error,
      :message "unknown option :xargs"}
     #_{:file    "corpus/spec_syntax.clj",
-     :row     20,
-     :col     9,
-     :level   :error,
-     :message "Unresolved symbol: xstr/starts-with?"}
+       :row     20,
+       :col     9,
+       :level   :error,
+       :message "Unresolved symbol: xstr/starts-with?"}
     {:file    "corpus/spec_syntax.clj",
      :row     30,
      :col     15,
@@ -2143,7 +2209,19 @@ foo/foo ;; this does use the private var
                my-deprecated-var :bla) my-deprecated-var"
           "--lang" "cljc"))
   (is (empty? (lint! "(defn ^:deprecated foo [] (foo))")))
-  (is (empty? (lint! "(def ^:deprecated foo (fn [] (foo)))"))))
+  (is (empty? (lint! "(def ^:deprecated foo (fn [] (foo)))")))
+  (is (empty? (lint! "(ns dude {:clj-kondo/config '{:linters {:deprecated-var
+                                                              {:level :off}}}})
+(def ^:deprecated foo)
+foo")))
+  (is (empty? (lint! "(ns dude {:clj-kondo/config '{:linters {:deprecated-var
+                                                              {:level :off}}}})
+(def ^:deprecated foo)
+foo")))
+  (is (empty? (lint! "(ns dude {:clj-kondo/config '{:linters {:deprecated-var
+                                                     {:exclude {dude/foo {:namespaces [dude]}}}}}})
+(def ^:deprecated foo)
+foo"))))
 
 (deftest unused-referred-var-test
   (assert-submaps
@@ -2443,7 +2521,7 @@ foo/baz
                                 :unresolved-var {:level :error}}})))
   ;; TODO? for now just include duplicate lint-as
   #_(testing "lint-as works automatically with imported vars"
-    (is (empty? (lint! "
+      (is (empty? (lint! "
 (ns foo.bar)
 
 (defmacro defsomething [name & body])
@@ -2455,9 +2533,9 @@ foo/baz
 (ns consumer (:require foo))
 (foo/defsomething dude)
 "
-                       '{:lint-as {foo.bar/defsomething clojure.core/def}
-                         :linters {:unresolved-symbol {:level :error}
-                                   :unresolved-var {:level :error}}})))))
+                         '{:lint-as {foo.bar/defsomething clojure.core/def}
+                           :linters {:unresolved-symbol {:level :error}
+                                     :unresolved-var {:level :error}}})))))
 
 (deftest potemkin-import-vars-cyclic-test
   (assert-submaps
@@ -2737,7 +2815,10 @@ foo/baz
        :clj [[com.fulcrologic.fulcro.dom-server]])))"
 
                        {:linters {:unsorted-required-namespaces {:level :warning}}}
-                       "--lang" "cljc")))))
+                       "--lang" "cljc"))))
+  (testing "case insensitivity"
+    (is (empty? (lint! "(ns foo (:require bar Bar))"
+                       {:linters {:unsorted-required-namespaces {:level :warning}}})))))
 
 (deftest set!-test
   (assert-submaps '[{:col 13 :message #"arg"}]
@@ -2772,11 +2853,11 @@ foo/baz
 
 (deftest conflicting-aliases-test
   (assert-submaps
-    [{:file "<stdin>", :row 1, :col 50,
-      :level :error, :message #"Conflicting alias for "}]
-    (lint! "(ns foo (:require [foo.bar :as bar] [baz.bar :as bar]))"
-           {:linters {:conflicting-alias {:level :error}
-                      :unused-namespace {:level :off}}}))
+   [{:file "<stdin>", :row 1, :col 50,
+     :level :error, :message #"Conflicting alias for "}]
+   (lint! "(ns foo (:require [foo.bar :as bar] [baz.bar :as bar]))"
+          {:linters {:conflicting-alias {:level :error}
+                     :unused-namespace {:level :off}}}))
   (is (empty? (lint! "(ns foo (:require [foo.bar :as foo] [baz.bar :as baz]))"
                      {:linters {:conflicting-alias {:level :error}
                                 :unused-namespace {:level :off}}})))
@@ -2789,16 +2870,16 @@ foo/baz
 (deftest refer-test
   (is (empty? (lint! "(ns foo (:require [foo.bar :as foo] [foo.baz :refer [asd]])) (foo/bazbar) (asd)")))
   (assert-submaps
-    [{:file "<stdin>", :row 1, :col 46,
-      :level :warning, :message #"require with :refer"}]
-    (lint! "(ns foo (:require [foo.bar :as foo] [foo.baz :refer [asd]])) (foo/bazbar) (asd)"
-           {:linters {:refer {:level :warning}}}))
+   [{:file "<stdin>", :row 1, :col 46,
+     :level :warning, :message #"require with :refer"}]
+   (lint! "(ns foo (:require [foo.bar :as foo] [foo.baz :refer [asd]])) (foo/bazbar) (asd)"
+          {:linters {:refer {:level :warning}}}))
   (assert-submaps
-    [{:file "<stdin>", :row 1, :col 46,
-      :level :warning, :message #"require with :refer"}]
-    (lint! "(ns foo (:require [foo.bar :as foo] [foo.baz :refer :all])) (foo/bazbar) (asd)"
-           {:linters {:refer {:level :warning}
-                      :refer-all {:level :off}}}))
+   [{:file "<stdin>", :row 1, :col 46,
+     :level :warning, :message #"require with :refer"}]
+   (lint! "(ns foo (:require [foo.bar :as foo] [foo.baz :refer :all])) (foo/bazbar) (asd)"
+          {:linters {:refer {:level :warning}
+                     :refer-all {:level :off}}}))
   (assert-submaps
    [{:file "<stdin>", :row 1, :col 35,
      :level :warning, :message #"require with :refer"}]
@@ -2892,7 +2973,7 @@ foo/baz
 (deftest multiple-options-test
 
   (testing "multiple --lint option"
-    (let [out (read-string
+    (let [out (edn/read-string
                (with-out-str
                  (main "--lint" "corpus/case.clj"
                        "--lint" "corpus/defmulti.clj"
@@ -2905,7 +2986,7 @@ foo/baz
              (select-keys (:summary out) [:error :warning :info])))))
 
   (testing "multiple --config option"
-    (let [out (read-string
+    (let [out (edn/read-string
                (with-out-str
                  (main "--lint" "corpus/case.clj"
                        "--lint" "corpus/defmulti.clj"
@@ -3066,6 +3147,14 @@ foo/")))
       :message "Unresolved namespace goog.object. Are you missing a require?"})
    (lint! "(goog.object/get #js {:a 1} \"a\")"
           "--lang" "cljs")))
+
+(deftest clojure-test-check-properties-for-all-test
+  (is (empty? (lint! "(require '[clojure.test.check.properties :refer [for-all]]
+                               '[clojure.test.check.generators :as gen])
+          (for-all [a gen/large-integer
+                    b gen/large-integer]
+            (>= (+ a b) a))"
+                     {:linters {:unresolved-symbol {:level :error}}}))))
 
 ;;;; Scratch
 

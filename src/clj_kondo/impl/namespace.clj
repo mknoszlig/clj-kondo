@@ -3,9 +3,11 @@
   (:refer-clojure :exclude [ns-name])
   (:require
    [clj-kondo.impl.analysis :as analysis]
+   [clj-kondo.impl.analysis.java :as java]
    [clj-kondo.impl.config :as config]
    [clj-kondo.impl.findings :as findings]
-   [clj-kondo.impl.utils :refer [export-ns-sym node->line deep-merge linter-disabled? one-of]]
+   [clj-kondo.impl.utils :as utils
+    :refer [export-ns-sym node->line deep-merge linter-disabled? one-of]]
    [clj-kondo.impl.var-info :as var-info]
    [clojure.string :as str])
   (:import [java.util StringTokenizer]))
@@ -66,7 +68,8 @@
                                       (pr-str raw-ns)
                                       (str raw-ns))
                              :else (str ns))
-                branch (:branch m)]
+                branch (:branch m)
+                raw-ns (str/lower-case raw-ns)]
             (cond branch
                   (recur last-processed-ns (next ns-list))
                   (pos? (compare last-processed-ns raw-ns))
@@ -113,7 +116,7 @@
          path [base-lang lang ns-sym]
          temp? (:temp metadata)
          config (:config ctx)]
-     (when (and (-> config :output :analysis)
+     (when (and (:analysis ctx)
                 (not temp?))
        (analysis/reg-var! ctx filename expr-row expr-col
                           ns-sym var-sym
@@ -225,12 +228,16 @@
                (assoc-in [base-lang lang ns-sym :aliases alias-sym] aliased-ns-sym)))))
 
 (defn reg-binding!
-  [{:keys [:base-lang :lang :namespaces :filename] :as ctx} ns-sym binding]
-  (when-not (:clj-kondo/mark-used binding)
+  [ctx ns-sym binding]
+  (when-not (or (:skip-reg-binding? ctx)
+                (:clj-kondo/skip-reg-binding binding))
     (when (:analyze-locals? ctx)
-      (analysis/reg-local! ctx filename binding))
-    (swap! namespaces update-in [base-lang lang ns-sym :bindings]
-           conj binding))
+      (analysis/reg-local! ctx (:filename ctx) binding))
+    (when-not (or (:clj-kondo/mark-used binding)
+                  (:mark-bindings-used? ctx))
+      (let [{:keys [:base-lang :lang :namespaces]} ctx]
+        (swap! namespaces update-in [base-lang lang ns-sym :bindings]
+               conj binding))))
   nil)
 
 (defn reg-destructuring-default!
@@ -261,20 +268,24 @@
   nil)
 
 (defn reg-imports!
-  [{:keys [:base-lang :lang :namespaces] :as _ctx} ns-sym imports]
+  [{:keys [:base-lang :lang :namespaces] :as ctx} ns-sym imports]
   (swap! namespaces update-in [base-lang lang ns-sym]
          (fn [ns]
            ;; TODO:
            ;; (lint-duplicate-imports! ctx (:required ns) ...)
            (update ns :imports merge imports)))
-  nil)
+  (when (java/analyze-class-usages? ctx)
+    (doseq [[k v] imports]
+      (java/reg-class-usage! ctx (str v "." k) (assoc (meta k) :import true)))))
 
-(defn class-name? [^String s]
-  (when-let [i (str/last-index-of s \.)]
-    (or (let [should-be-capital-letter-idx (inc i)]
-          (and (> (.length s) should-be-capital-letter-idx)
-               (Character/isUpperCase ^char (.charAt s should-be-capital-letter-idx))))
-        (str/includes? s "_"))))
+(defn class-name? [s]
+  (let [^String s (str s)]
+    (when-let [i (str/last-index-of s \.)]
+      (or (let [should-be-capital-letter-idx (inc i)]
+            (and (> (.length s) should-be-capital-letter-idx)
+                 (Character/isUpperCase ^char (.charAt s should-be-capital-letter-idx))))
+          (when-let [i (str/index-of s "_")]
+            (pos? i))))))
 
 (defn reg-unresolved-symbol!
   [ctx ns-sym sym {:keys [:base-lang :lang :config
@@ -283,7 +294,9 @@
                 (config/unresolved-symbol-excluded config
                                                    callstack sym)
                 (let [symbol-name (name sym)]
-                  (or (str/starts-with? symbol-name ".")
+                  (or (and
+                       (> (count symbol-name) 1)
+                       (str/starts-with? symbol-name "."))
                       (class-name? symbol-name))))
     (swap! (:namespaces ctx) update-in [base-lang lang ns-sym :unresolved-symbols sym]
            (fnil conj [])
@@ -325,20 +338,30 @@
     ns))
 
 (defn reg-used-import!
-  [{:keys [:base-lang :lang :namespaces] :as _ctx}
-   ns-sym imp]
-  ;; (prn "import" import)
+  [{:keys [:base-lang :lang :namespaces] :as ctx}
+   name-sym ns-sym package class-name expr]
   (swap! namespaces update-in [base-lang lang ns-sym :used-imports]
-         conj imp))
+         conj class-name)
+  (when (java/analyze-class-usages? ctx)
+    (let [name-meta (meta name-sym)
+          loc (or (meta expr)
+                  (meta class-name))]
+      (java/reg-class-usage! ctx
+                                  (str package "." class-name)
+                                  (assoc loc
+                                         :name-row (or (:row name-meta) (:row loc))
+                                         :name-col (or (:col name-meta) (:col loc))
+                                         :name-end-row (or (:end-row name-meta) (:end-row loc))
+                                         :name-end-col (or (:end-col name-meta) (:end-col loc)))))))
 
 (defn reg-unresolved-namespace!
   [{:keys [:base-lang :lang :namespaces :config :callstack :filename] :as _ctx} ns-sym unresolved-ns]
   (when-not
-      (or
-       (identical? :off (-> config :linters :unresolved-namespace :level))
-       (config/unresolved-namespace-excluded config unresolved-ns)
+   (or
+    (identical? :off (-> config :linters :unresolved-namespace :level))
+    (config/unresolved-namespace-excluded config unresolved-ns)
        ;; unresolved namespaces in an excluded unresolved symbols call are not reported
-       (config/unresolved-symbol-excluded config callstack :dummy))
+    (config/unresolved-symbol-excluded config callstack :dummy))
     (let [unresolved-ns (vary-meta unresolved-ns
                                    ;; since the user namespaces is present in each filesrc/clj_kondo/impl/namespace.clj
                                    ;; we must include the filename here
@@ -442,7 +465,7 @@
       sym)))
 
 (defn resolve-name
-  [ctx ns-name name-sym]
+  [ctx call? ns-name name-sym expr]
   (let [lang (:lang ctx)
         ns (get-namespace ctx (:base-lang ctx) lang ns-name)
         cljs? (identical? :cljs lang)]
@@ -471,31 +494,45 @@
                   (assoc :resolved-core? (var-info/core-sym? lang var-name)))))
             (when-let [[class-name package]
                        (or (when (identical? :clj lang)
-                             (or (find var-info/default-import->qname ns-sym)
-                                 (when-let [v (get var-info/default-fq-imports ns-sym)]
-                                   [v v])))
+                             (or (when-let [[class fq] (find var-info/default-import->qname ns-sym)]
+                                   ;; TODO: fix in default-import->qname
+                                   [class (str/replace fq (str/re-quote-replacement (str "." class)) "")])
+                                 (when-let [fq (get var-info/default-fq-imports ns-sym)]
+                                   (let [fq (str fq)]
+                                     [(last (str/split fq #"\."))
+                                      (str/join "." (butlast (str/split fq #"\.")))]))))
                            (find (:imports ns) ns-sym))]
-              (reg-used-import! ctx ns-name class-name)
+              (reg-used-import! ctx name-sym ns-name package class-name expr)
+              (when call? (findings/warn-reflection ctx expr))
               {:interop? true
-               :ns package
+               :ns (symbol (str package "." class-name))
                :name (symbol (name name-sym))})
-            (when-not (if (identical? :clj lang)
-                        (or (one-of ns* ["clojure.core"])
-                            (class-name? ns*))
-                        (when cljs?
-                          ;; see https://github.com/clojure/clojurescript/blob/6ed949278ba61dceeafb709583415578b6f7649b/src/main/clojure/cljs/analyzer.cljc#L781
-                          (one-of ns* ["js" "goog" "cljs.core"
-                                       "Math" "String"])))
-              {:name (symbol (name name-sym))
-               :unresolved? true
-               :unresolved-ns ns-sym})))
+            (if (identical? :clj lang)
+              (if (and (not (one-of ns* ["clojure.core"]))
+                       (class-name? ns*))
+                (do (java/reg-class-usage! ctx ns* (meta expr))
+                    (when call? (findings/warn-reflection ctx expr))
+                    {:interop? true})
+                {:name (symbol (name name-sym))
+                 :unresolved? true
+                 :unresolved-ns ns-sym})
+              (if cljs?
+                ;; see https://github.com/clojure/clojurescript/blob/6ed949278ba61dceeafb709583415578b6f7649b/src/main/clojure/cljs/analyzer.cljc#L781
+                (when-not (one-of ns* ["js" "goog" "cljs.core"
+                                       "Math" "String"])
+                  {:name (symbol (name name-sym))
+                   :unresolved? true
+                   :unresolved-ns ns-sym})
+                {:name (symbol (name name-sym))
+                 :unresolved? true
+                 :unresolved-ns ns-sym}))))
       (let [name-sym (if cljs?
                        ;; although we also check for CLJS in normalize-sym, we
                        ;; already know cljs? here
                        (normalize-sym-name ctx name-sym)
                        name-sym)]
         (if (and cljs? (namespace name-sym))
-          (recur ctx ns-name name-sym)
+          (recur ctx call? ns-name name-sym expr)
           (or
            (when-let [[k v] (find (:referred-vars ns)
                                   name-sym)]
@@ -505,7 +542,10 @@
              {:ns (:name ns)
               :name name-sym})
            (when-let [[name-sym* package]
-                      (or (find var-info/default-import->qname name-sym)
+                      (or (when-let [[class fq] (find var-info/default-import->qname name-sym)]
+                            ;; TODO: fix in default-import->qname
+                            [class (str/replace fq (str/re-quote-replacement (str "." class)) "")])
+                          ;; (find var-info/default-import->qname name-sym)
                           (when-let [v (get var-info/default-fq-imports name-sym)]
                             [v v])
                           (if cljs?
@@ -513,7 +553,8 @@
                             (let [fs (first-segment name-sym)]
                               (find (:imports ns) fs))
                             (find (:imports ns) name-sym)))]
-             (reg-used-import! ctx ns-name name-sym*)
+             (reg-used-import! ctx name-sym ns-name package name-sym* expr)
+             (when call? (findings/warn-reflection ctx expr))
              {:ns package
               :interop? true
               :name name-sym*})
@@ -529,8 +570,9 @@
                   (when-not clojure-excluded?
                     (var-info/core-sym? lang name-sym))
                   ;; check special form
-                  (or (special-symbol? name-sym)
-                      (contains? var-info/special-forms name-sym)))
+                  (and call?
+                       (or (special-symbol? name-sym)
+                           (contains? var-info/special-forms name-sym))))
                {:ns (case lang
                       :clj 'clojure.core
                       :cljs 'cljs.core)
@@ -540,10 +582,15 @@
                                              (when-not (contains? excluded name-sym)
                                                k))
                                            (:refer-alls ns))]
-                 {:ns (or referred-all-ns :clj-kondo/unknown-namespace)
-                  :name name-sym
-                  :unresolved? true
-                  :clojure-excluded? clojure-excluded?})))))))))
+                 (if (and (not referred-all-ns)
+                          (class-name? name-sym))
+                   (do (java/reg-class-usage! ctx (str name-sym) (meta expr))
+                       (when call? (findings/warn-reflection ctx expr))
+                       {:interop? true})
+                   {:ns (or referred-all-ns :clj-kondo/unknown-namespace)
+                    :name name-sym
+                    :unresolved? true
+                    :clojure-excluded? clojure-excluded?}))))))))))
 
 ;;;; Scratch
 
